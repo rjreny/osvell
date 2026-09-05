@@ -48,6 +48,16 @@ const idleProgress: UpdateProgress = {
   error: null,
 };
 
+export type SettingsSection = "library" | "appearance" | "taste" | "system";
+
+const SECTIONS: SettingsSection[] = ["library", "appearance", "taste", "system"];
+const LABELS: Record<SettingsSection, string> = {
+  library: "Library",
+  appearance: "Appearance",
+  taste: "Taste",
+  system: "System",
+};
+
 export function SettingsView({
   theme,
   accent,
@@ -75,6 +85,7 @@ export function SettingsView({
   onStatus: (text: string) => void;
   onRefresh: () => Promise<void>;
 }) {
+  const [section, setSection] = useState<SettingsSection>("library");
   const [updateNote, setUpdateNote] = useState("Not checked");
   const [signingConfigured, setSigningConfigured] = useState(true);
   const [pendingVersion, setPendingVersion] = useState<string | null>(null);
@@ -309,7 +320,25 @@ export function SettingsView({
           <p className="muted">Library, taste, appearance, and this PC</p>
         </div>
       </header>
-      <div className="settings-grid">
+      <div className="settings-shell">
+        <nav className="settings-rail" aria-label="Settings">
+          {SECTIONS.map((id) => (
+            <button
+              key={id}
+              type="button"
+              className={section === id ? "is-on" : undefined}
+              aria-current={section === id ? "page" : undefined}
+              onClick={() => setSection(id)}
+            >
+              {LABELS[id]}
+              {id === "system" && pendingVersion ? (
+                <span className="settings-rail-badge">Update available</span>
+              ) : null}
+            </button>
+          ))}
+        </nav>
+        <div className="settings-panel">
+        {section === "library" ? (
         <section className="settings-group">
           <h2>Library</h2>
           <p className="hint">Your Letterboxd history, poster matching, and diary refresh.</p>
@@ -406,10 +435,12 @@ export function SettingsView({
             </div>
           </div>
           {lastEnrich ? <p className="hint">{formatEnrich(lastEnrich)}</p> : null}
-          </section>
+        </section>
+        ) : null}
 
-          <section className="settings-group">
-            <h2>Look</h2>
+        {section === "appearance" ? (
+        <section className="settings-group">
+            <h2>Appearance</h2>
             <p className="hint">Choose the theme and accent Studio uses on this PC.</p>
             <div className="settings-inline-row settings-look-row">
               <div className="field">
@@ -434,9 +465,11 @@ export function SettingsView({
               </div>
             </div>
         </section>
+        ) : null}
 
+        {section === "taste" ? (
         <section className="settings-group">
-          <h2>Taste agent</h2>
+          <h2>Taste</h2>
           <p className="hint">
             Pay-as-you-go via{" "}
             <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">
@@ -524,10 +557,14 @@ export function SettingsView({
               </button>
             </div>
           </div>
-          </section>
+        </section>
+        ) : null}
 
+        {section === "system" ? (
+        <div className="settings-system-panel">
+          <h2>System</h2>
           <section className="settings-group">
-          <h2>This PC</h2>
+          <h3>This PC</h3>
           <p className="hint">Storage, logs, and recovery controls for this installation.</p>
           {installInfo ? (
             <>
@@ -557,10 +594,10 @@ export function SettingsView({
               Reset data
             </button>
           </div>
-          </section>
+        </section>
 
-          <section className="settings-group">
-          <h2>Updates</h2>
+        <section className="settings-group">
+          <h3>Updates</h3>
           <p className="hint">Keep Studio current with the latest fixes and improvements.</p>
           <div className="update-line">
             <button type="button" className="ghost-pill" onClick={() => void checkUpdates()}>
@@ -586,6 +623,9 @@ export function SettingsView({
             <p className="hint">Signing is not configured in this build. Reinstall from a signed GitHub release.</p>
           ) : null}
         </section>
+        </div>
+        ) : null}
+        </div>
       </div>
       <UpdateOverlay
         open={updateOpen}

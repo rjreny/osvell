@@ -840,19 +840,68 @@ html[data-theme="light"] .scroll-thumb::before {
   .connection-summary { max-width: 42%; white-space: normal; }
 }
 
-/* Settings follows one reading path; controls use the same full-width material. */
-.settings-grid {
+/* Settings uses a bounded rail and one active preference panel. */
+.settings-page > .page-head,
+.settings-shell {
+  width: 100%;
+  max-width: 960px;
+}
+
+.settings-shell {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 28px 32px;
+}
+
+.settings-rail {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  align-self: start;
+  gap: 2px;
 }
 
-.settings-page .settings-grid {
+.settings-rail button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   width: 100%;
+  min-height: 38px;
+  padding: 8px 10px 8px 12px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-align: left;
 }
 
-.settings-column {
-  display: contents;
+.settings-rail button:hover {
+  color: var(--text);
+  background: transparent;
+}
+
+.settings-rail button.is-on {
+  border-left-color: var(--accent);
+  color: var(--text);
+  background: transparent;
+}
+
+.settings-rail button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.settings-rail-badge {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.settings-panel {
+  width: 100%;
+  max-width: 720px;
+  min-width: 0;
 }
 
 .settings-page .settings-group {
@@ -860,8 +909,24 @@ html[data-theme="light"] .scroll-thumb::before {
   padding: 20px 0;
 }
 
+.settings-panel > .settings-group,
+.settings-system-panel > .settings-group:first-of-type {
+  padding-top: 0;
+  border-top: 0;
+}
+
 .settings-page .settings-group h2 {
   margin-bottom: 6px;
+}
+
+.settings-system-panel > h2 {
+  margin: 0 0 var(--space-3);
+  font-size: 18px;
+}
+
+.settings-system-panel .settings-group h3 {
+  margin: 0 0 6px;
+  font-size: 16px;
 }
 
 .settings-page .settings-group > h2 + .hint {
@@ -2325,17 +2390,6 @@ html[data-theme="light"] .ghost {
   white-space: nowrap;
 }
 
-.settings-grid {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 0;
-}
-
-.settings-column {
-  display: contents;
-}
-
 .stats-shelf {
   min-width: 0;
   padding: 22px 0 0;
@@ -3104,8 +3158,7 @@ html[data-theme="light"] .ghost {
   }
 
   .stats-breakdown,
-  .friends-layout,
-  .settings-grid {
+  .friends-layout {
     grid-template-columns: 1fr;
   }
 
