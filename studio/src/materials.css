@@ -840,24 +840,27 @@ html[data-theme="light"] .scroll-thumb::before {
   .connection-summary { max-width: 42%; white-space: normal; }
 }
 
-/* Settings uses a bounded, centered preference shell — not a corner island. */
+/* Settings fills page content width. Preference rows use label | control across the panel. */
 .settings-page > .page-head,
 .settings-shell {
   width: 100%;
-  max-width: 1080px;
-  margin-inline: auto;
+  max-width: none;
+  margin-inline: 0;
 }
 
 .settings-shell {
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: 28px 40px;
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: 28px 48px;
+  align-items: start;
 }
 
 .settings-rail {
   display: flex;
   flex-direction: column;
   align-self: start;
+  position: sticky;
+  top: calc(var(--nav-height) + 12px);
   gap: 2px;
 }
 
@@ -904,13 +907,86 @@ html[data-theme="light"] .scroll-thumb::before {
   min-width: 0;
 }
 
-.settings-page .settings-group {
-  width: 100%;
-  padding: 20px 0;
+.settings-panel-intro {
+  margin: 0 0 4px;
 }
 
-.settings-panel > .settings-group,
-.settings-system-panel > .settings-group:first-of-type {
+.settings-panel-intro h2 {
+  margin: 0 0 6px;
+}
+
+.settings-panel-intro .hint {
+  margin: 0;
+  max-width: 62ch;
+}
+
+.settings-pref-list {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.settings-pref-row {
+  display: grid;
+  grid-template-columns: 11.5rem minmax(0, 1fr);
+  gap: 10px 40px;
+  align-items: start;
+  width: 100%;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-pref-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-pref-label {
+  padding-top: 10px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.settings-pref-label label,
+.settings-pref-label .field-label,
+.settings-pref-label h3 {
+  margin: 0;
+  color: inherit;
+  font: inherit;
+}
+
+.settings-pref-control {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.settings-pref-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  width: 100%;
+}
+
+.settings-pref-main input {
+  flex: 1 1 240px;
+  width: auto;
+  max-width: 28rem;
+}
+
+.settings-pref-actions {
+  margin: 0;
+}
+
+.settings-page .settings-group {
+  width: 100%;
+  padding: 0;
+  border-top: 0;
+}
+
+.settings-panel > .settings-group {
   padding-top: 0;
   border-top: 0;
 }
@@ -919,28 +995,17 @@ html[data-theme="light"] .scroll-thumb::before {
   margin-bottom: 28px;
 }
 
-.settings-system-panel > h2 {
+.settings-system-panel > .settings-panel-intro h2 {
   margin: 0 0 var(--space-3);
   font-size: 18px;
 }
 
-.settings-system-panel .settings-group h3 {
-  margin: 0 0 6px;
-  font-size: 16px;
-  text-wrap: balance;
-}
-
-.settings-system-panel > .settings-system-updates {
-  margin-top: 8px;
-  border-top: 1px solid var(--border);
-}
-
-.settings-system-updates.is-update-available > h3 {
+.settings-system-updates.is-update-available .settings-pref-label h3 {
   color: var(--accent);
 }
 
 .settings-system-version {
-  margin: 0 0 10px;
+  margin: 0;
   color: var(--text);
   font-weight: 600;
 }
@@ -1243,24 +1308,24 @@ html[data-theme="light"] .scroll-thumb::before {
   border-radius: var(--radius-pill);
 }
 
-.settings-taste-model-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 16px;
-  padding: 2px 0 16px;
-  border-bottom: 1px solid var(--border);
+.settings-taste-model-row .settings-pref-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px 24px;
+  align-items: start;
 }
 
 .settings-taste-model-summary {
+  display: contents;
+}
+
+.settings-taste-model-summary .settings-pref-main {
   display: grid;
-  min-width: 0;
   gap: 4px;
 }
 
 .settings-taste-model-summary strong {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 650;
 }
 
@@ -1273,7 +1338,7 @@ html[data-theme="light"] .scroll-thumb::before {
   align-items: center;
   flex: 0 0 auto;
   gap: 4px;
-  margin-top: 22px;
+  margin-top: 2px;
   font-weight: 600;
 }
 
@@ -1369,6 +1434,7 @@ html[data-theme="light"] .scroll-thumb::before {
   }
 
   .settings-rail {
+    position: static;
     flex-direction: row;
     flex-wrap: wrap;
     gap: 4px;
@@ -1386,6 +1452,19 @@ html[data-theme="light"] .scroll-thumb::before {
   .settings-rail button.is-on {
     border-left-color: transparent;
     border-bottom-color: var(--accent);
+  }
+
+  .settings-pref-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .settings-pref-label {
+    padding-top: 0;
+  }
+
+  .settings-taste-model-row .settings-pref-control {
+    grid-template-columns: 1fr;
   }
 
   .taste-model-modal {
