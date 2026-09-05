@@ -132,4 +132,50 @@ describe("StatsView", () => {
     expect(within(overview!).queryByText(/watchlist/i)).not.toBeInTheDocument();
     expect(screen.getByText("All time")).toHaveClass("stats-scope");
   });
+
+  it("keeps activity and ratings as a single asymmetric row", async () => {
+    renderStats();
+
+    const activity = await screen.findByRole("heading", { name: /watching activity/i });
+    const row = document.querySelector<HTMLElement>(".stats-viz-row");
+
+    expect(row).not.toBeNull();
+    expect(row!.querySelector(".stats-activity")).toContainElement(activity);
+    expect(row!.querySelector(".stats-ratings")).not.toBeNull();
+    expect(row!.querySelector(".stats-activity")!.compareDocumentPosition(
+      row!.querySelector(".stats-ratings")!,
+    ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(document.querySelector(".stats-primary-row")).toBeNull();
+  });
+
+  it("renders genres and decades as ranked lists without a decade histogram", async () => {
+    renderStats();
+
+    const genresHeading = await screen.findByRole("heading", { name: /your genres/i });
+    const row = document.querySelector<HTMLElement>(".stats-rank-row");
+    const genres = document.querySelector<HTMLElement>(".stats-genres");
+    const decades = document.querySelector<HTMLElement>(".stats-decades");
+
+    expect(row).not.toBeNull();
+    expect(row).toContainElement(genres);
+    expect(row).toContainElement(decades);
+    expect(genres).toContainElement(genresHeading);
+    expect(genres!.querySelector(".stats-rank-list")).not.toBeNull();
+    expect(genres!.querySelectorAll(".stats-genre-bar")).toHaveLength(snapshot.genres.length);
+    expect(within(genres!).getByText("2 films")).toBeInTheDocument();
+    expect(within(genres!).getByText("4.3 avg")).toBeInTheDocument();
+    expect(decades!.querySelector(".stats-rank-list")).not.toBeNull();
+    expect(decades!.querySelector(".stats-histogram")).toBeNull();
+  });
+
+  it("keeps Highest rated quieter and below the ranked lists", async () => {
+    renderStats();
+
+    const highestRated = await screen.findByRole("heading", { name: /highest rated/i });
+    const shelf = highestRated.closest(".stats-shelf");
+    const rankRow = document.querySelector(".stats-rank-row");
+
+    expect(shelf).toHaveClass("stats-shelf-secondary");
+    expect(rankRow!.compareDocumentPosition(shelf!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });
