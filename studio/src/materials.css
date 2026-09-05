@@ -961,6 +961,30 @@ html[data-theme="light"] .scroll-thumb::before {
   width: min(100%, 360px);
 }
 
+.settings-sync-disclosure {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 0 0 12px;
+}
+
+.settings-sync-disclosure > .hint,
+.settings-sync-details {
+  margin: 0;
+}
+
+.settings-sync-details {
+  flex-basis: 100%;
+}
+
+.settings-sync-disclosure .text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
 .settings-key-row > .field {
   flex: 0 1 440px;
   width: min(100%, 440px);
@@ -971,8 +995,14 @@ html[data-theme="light"] .scroll-thumb::before {
   width: auto;
 }
 
-.settings-key-row .key-status {
+.settings-library-panel .settings-key-row .key-status {
   margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.settings-library-panel .settings-key-row .key-status.is-bad {
+  color: var(--danger);
 }
 
 .settings-look-row {
@@ -1006,15 +1036,30 @@ html[data-theme="light"] .scroll-thumb::before {
   transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
+.settings-library-panel .primary {
+  border-color: transparent;
+  background: var(--play-bg);
+  color: var(--play-fg);
+}
+
 .settings-page .primary:hover:not(:disabled),
 .settings-page .ghost-pill:hover:not(:disabled) {
   border-color: color-mix(in oklch, var(--accent) 52%, var(--border));
   background: var(--surface-hover);
 }
 
+.settings-library-panel .primary:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--play-bg);
+}
+
 .settings-page .primary:active:not(:disabled),
 .settings-page .ghost-pill:active:not(:disabled) {
   background: color-mix(in oklch, var(--surface-hover) 78%, var(--bg));
+}
+
+.settings-library-panel .primary:active:not(:disabled) {
+  background: var(--play-bg);
 }
 
 .settings-page .seg {

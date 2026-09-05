@@ -58,6 +58,15 @@ const LABELS: Record<SettingsSection, string> = {
   system: "System",
 };
 
+export function libraryEstablished(coverage: LibraryCoverage | null): boolean {
+  return Boolean(
+    coverage &&
+      (coverage.uniqueMovies > 0 ||
+        coverage.fullHistoryAvailable ||
+        coverage.source !== "none"),
+  );
+}
+
 export function SettingsView({
   theme,
   accent,
@@ -102,6 +111,7 @@ export function SettingsView({
   const [installInfo, setInstallInfo] = useState<InstallInfo | null>(null);
   const [lastImport, setLastImport] = useState<ImportResult | null>(null);
   const [lastEnrich, setLastEnrich] = useState<EnrichReport | null>(null);
+  const [syncDetailsOpen, setSyncDetailsOpen] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -287,6 +297,7 @@ export function SettingsView({
 
   const keyConnected = Boolean(keyStatus?.stored && keyStatus.valid === true && !replacing);
   const tasteConnected = Boolean(tasteStatus?.stored && tasteStatus.valid !== false && !tasteReplacing);
+  const established = libraryEstablished(coverage);
 
   async function confirmResetData() {
     const ok = await ask(
@@ -339,7 +350,7 @@ export function SettingsView({
         </nav>
         <div className="settings-panel">
         {section === "library" ? (
-        <section className="settings-group">
+        <section className="settings-group settings-library-panel">
           <h2>Library</h2>
           <p className="hint">Your Letterboxd history, poster matching, and diary refresh.</p>
           <div className="settings-inline-row settings-library-row">
@@ -353,29 +364,46 @@ export function SettingsView({
               />
             </div>
             <div className="field-row">
-              <button type="button" className="primary" disabled={busy} onClick={() => void importExport()}>
-                {busy ? "Working…" : "Import full export"}
+              <button
+                type="button"
+                className={established ? "ghost-pill" : "primary"}
+                disabled={busy}
+                onClick={() => void importExport()}
+              >
+                {busy ? "Working…" : "Import history"}
               </button>
               <button
                 type="button"
-                className="ghost-pill"
+                className={established ? "primary" : "ghost-pill"}
                 disabled={busy || !username.trim()}
                 onClick={() => void refreshDiary()}
               >
-                Sync diary now
+                Sync now
               </button>
               <button type="button" className="ghost-pill" disabled={busy} onClick={() => void runEnrich()}>
                 Match posters
               </button>
             </div>
           </div>
-          <p className="hint">
-            Studio refreshes your public Letterboxd diary RSS about once an hour while the app is
-            open, and when you launch it. Import a fresh Letterboxd export ZIP whenever you want to
-            add ratings and reviews that were not diary logs. Same official feeds RSS readers use —
-            no site scraping.
-            Last refresh: {formatRssSyncAt(lastRssSyncAt)}.
-          </p>
+          <div className="settings-sync-disclosure">
+            <button
+              type="button"
+              className="text-btn"
+              aria-expanded={syncDetailsOpen}
+              onClick={() => setSyncDetailsOpen((open) => !open)}
+            >
+              How syncing works <span aria-hidden="true">›</span>
+            </button>
+            <span className="hint">Last refresh: {formatRssSyncAt(lastRssSyncAt)}</span>
+            {syncDetailsOpen ? (
+              <p className="hint settings-sync-details">
+                Studio refreshes your public Letterboxd diary RSS about once an hour while the app is
+                open, and when you launch it. Import a fresh Letterboxd export ZIP whenever you want to
+                add ratings and reviews that were not diary logs. Same official feeds RSS readers use —
+                no site scraping.
+              </p>
+            ) : null}
+          </div>
           {rssPausedUntil ? (
             <p className="hint">
               Paused until {formatRssSyncAt(rssPausedUntil)} because Letterboxd asked us to wait.
@@ -393,7 +421,7 @@ export function SettingsView({
             <div className={keyConnected ? "field is-key-connected" : "field"}>
               <label htmlFor="settings-tmdb">TMDB API key</label>
               {keyConnected ? (
-                <p className="key-status is-ok">Saved in Windows Credential Manager</p>
+                <p className="key-status">Configured</p>
               ) : (
                 <input
                   id="settings-tmdb"
@@ -415,7 +443,7 @@ export function SettingsView({
                 </button>
               ) : (
                 <button type="button" className="ghost-pill" disabled={busy} onClick={() => setReplacing(true)}>
-                  Replace key
+                  Change
                 </button>
               )}
               <button
@@ -430,7 +458,7 @@ export function SettingsView({
                   })
                 }
               >
-                Remove key
+                Remove
               </button>
             </div>
           </div>

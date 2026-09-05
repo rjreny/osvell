@@ -116,4 +116,65 @@ describe("SettingsView", () => {
     expect(screen.getByRole("heading", { name: "System", level: 2 })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Taste", level: 2 })).not.toBeInTheDocument();
   });
+
+  it("makes Import history primary when the library is empty", () => {
+    renderSettings({
+      coverage: {
+        ...emptyCoverage,
+        uniqueMovies: 0,
+        source: "none",
+        fullHistoryAvailable: false,
+      },
+    });
+
+    const importButton = screen.getByRole("button", { name: /import history/i });
+    expect(importButton.className).toMatch(/primary/);
+  });
+
+  it("elevates Sync now after the library is established", () => {
+    renderSettings({
+      coverage: {
+        ...emptyCoverage,
+        uniqueMovies: 120,
+        source: "export",
+        fullHistoryAvailable: true,
+      },
+    });
+
+    expect(screen.getByRole("button", { name: /sync now/i }).className).toMatch(/primary/);
+    expect(screen.getByRole("button", { name: /match posters/i }).className).not.toMatch(/primary/);
+  });
+
+  it.each([
+    ["a non-empty source", { source: "rss" as const }],
+    ["full history", { fullHistoryAvailable: true }],
+  ])("treats %s as an established library", (_label, coverageOverride) => {
+    renderSettings({ coverage: { ...emptyCoverage, ...coverageOverride } });
+
+    expect(screen.getByRole("button", { name: /sync now/i }).className).toMatch(/primary/);
+  });
+
+  it("keeps sync explanation collapsed until disclosed", () => {
+    renderSettings({ coverage: emptyCoverage });
+
+    expect(screen.queryByText(/once an hour/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /how syncing works/i }));
+    expect(screen.getByText(/once an hour/i)).toBeInTheDocument();
+  });
+
+  it("uses quiet human labels for configured TMDB", async () => {
+    tmdbKeyStatus.mockResolvedValue({
+      stored: true,
+      valid: true,
+      kind: "credential",
+      lastError: null,
+    });
+
+    renderSettings({ coverage: emptyCoverage });
+
+    expect(await screen.findByText("Configured")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeInTheDocument();
+    expect(screen.queryByText(/Credential Manager/i)).not.toBeInTheDocument();
+  });
 });
