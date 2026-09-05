@@ -1,9 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LibraryCoverage, TasteKeyStatus } from "../../platform/types/film";
+import type { InstallInfo, LibraryCoverage, TasteKeyStatus } from "../../platform/types/film";
 import { SettingsView } from "./SettingsView";
 
-const { getInstallInfo, listen, tasteKeyStatus, tasteSetModel, tmdbKeyStatus } = vi.hoisted(() => ({
+const { checkAppUpdate, getInstallInfo, listen, tasteKeyStatus, tasteSetModel, tmdbKeyStatus } = vi.hoisted(() => ({
+  checkAppUpdate: vi.fn(),
   getInstallInfo: vi.fn(),
   listen: vi.fn(),
   tasteKeyStatus: vi.fn(),
@@ -43,7 +44,7 @@ vi.mock("../../platform/install", () => ({
 }));
 vi.mock("../../platform/log", () => ({ log: vi.fn() }));
 vi.mock("../../platform/updater", () => ({
-  checkAppUpdate: vi.fn(),
+  checkAppUpdate,
   downloadAndInstallUpdate: vi.fn(),
 }));
 
@@ -56,6 +57,17 @@ const emptyCoverage: LibraryCoverage = {
   source: "none",
   fullHistoryAvailable: false,
   warnings: [],
+};
+
+const sampleInstall: InstallInfo = {
+  version: "0.12.3",
+  installKind: "installed",
+  appDataDir: "C:\\Users\\Ryan\\AppData\\Roaming\\Studio",
+  databasePath: "C:\\Users\\Ryan\\AppData\\Roaming\\Studio\\studio.db",
+  executablePath: "C:\\Program Files\\Studio\\studio.exe",
+  uninstallerPath: "C:\\Program Files\\Studio\\uninstall.exe",
+  logPath: "C:\\Users\\Ryan\\AppData\\Roaming\\Studio\\studio.log",
+  dataBytes: 2048,
 };
 
 const statusWithFourModels: TasteKeyStatus = {
@@ -162,6 +174,57 @@ describe("SettingsView", () => {
 
     expect(screen.getByRole("heading", { name: "System", level: 2 })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Taste", level: 2 })).not.toBeInTheDocument();
+  });
+
+  it("colocates This PC and Updates under System with a local divider", async () => {
+    getInstallInfo.mockResolvedValue(sampleInstall);
+    renderSettings({
+      coverage: {
+        ...emptyCoverage,
+        uniqueMovies: 12,
+        totalViewings: 14,
+        source: "export",
+        fullHistoryAvailable: true,
+      },
+    });
+
+    const rail = screen.getByRole("navigation", { name: "Settings" });
+    expect(within(rail).getAllByRole("button")).toHaveLength(4);
+    fireEvent.click(within(rail).getByRole("button", { name: "System" }));
+
+    const thisPcHeading = screen.getByRole("heading", { name: "This PC", level: 3 });
+    const updatesHeading = screen.getByRole("heading", { name: "Updates", level: 3 });
+    const thisPc = thisPcHeading.closest("section");
+    const updates = updatesHeading.closest("section");
+
+    expect(thisPc).not.toBeNull();
+    expect(updates).not.toBeNull();
+    expect(await within(thisPc!).findByText(sampleInstall.appDataDir)).toHaveClass("mono-path");
+    expect(within(thisPc!).getByRole("button", { name: "Open folder" })).toBeInTheDocument();
+    expect(updates).toHaveClass("settings-system-updates");
+    expect(within(updates!).getByText("Version 0.12.3")).toBeInTheDocument();
+    expect(within(updates!).getByRole("button", { name: "Check for updates" })).toBeInTheDocument();
+  });
+
+  it("badges System after an update check without adding a rail destination", async () => {
+    checkAppUpdate.mockResolvedValue({
+      available: true,
+      version: "0.13.0",
+      signingConfigured: true,
+    });
+    renderSettings();
+
+    const rail = screen.getByRole("navigation", { name: "Settings" });
+    fireEvent.click(within(rail).getByRole("button", { name: "System" }));
+    fireEvent.click(screen.getByRole("button", { name: /check/i }));
+
+    await waitFor(() => {
+      expect(within(rail).getAllByRole("button")).toHaveLength(4);
+      expect(within(rail).getByRole("button", { name: "System" })).toHaveTextContent(
+        "Update available",
+      );
+    });
+    expect(screen.getByRole("button", { name: "Update to 0.13.0" })).toBeInTheDocument();
   });
 
   it("presents theme choices as labeled previews", () => {

@@ -927,6 +927,22 @@ html[data-theme="light"] .scroll-thumb::before {
 .settings-system-panel .settings-group h3 {
   margin: 0 0 6px;
   font-size: 16px;
+  text-wrap: balance;
+}
+
+.settings-system-panel > .settings-system-updates {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-system-updates.is-update-available > h3 {
+  color: var(--accent);
+}
+
+.settings-system-version {
+  margin: 0 0 10px;
+  color: var(--text);
+  font-weight: 600;
 }
 
 .settings-page .settings-group > h2 + .hint {

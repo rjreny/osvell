@@ -354,12 +354,13 @@ export function SettingsView({
               key={id}
               type="button"
               className={section === id ? "is-on" : undefined}
+              aria-label={LABELS[id]}
               aria-current={section === id ? "page" : undefined}
               onClick={() => setSection(id)}
             >
               {LABELS[id]}
               {id === "system" && pendingVersion ? (
-                <span className="settings-rail-badge">Update available</span>
+                <span className="settings-rail-badge" aria-hidden="true">Update available</span>
               ) : null}
             </button>
           ))}
@@ -630,24 +631,24 @@ export function SettingsView({
         {section === "system" ? (
         <div className="settings-system-panel">
           <h2>System</h2>
-          <section className="settings-group">
+          <section className="settings-group settings-system-device">
           <h3>This PC</h3>
           <p className="hint">Storage, logs, and recovery controls for this installation.</p>
           {installInfo ? (
             <>
               <p className="hint">
-                {installKindLabel(installInfo.installKind)} · v{version} · {formatBytes(installInfo.dataBytes)} on disk
+                {installKindLabel(installInfo.installKind)} · {formatBytes(installInfo.dataBytes)} on disk
               </p>
               {coverage ? <p className="hint">{formatLibrarySummary(coverage)}</p> : null}
               {coverage?.warnings[0] ? <p className="hint">{coverage.warnings[0]}</p> : null}
               <p className="mono-path">{installInfo.appDataDir}</p>
             </>
           ) : (
-            <p className="hint">Version {version}</p>
+            <p className="hint">Storage details are unavailable for this build.</p>
           )}
           <div className="field-row">
             <button type="button" className="ghost-pill" onClick={() => void openDataFolder().catch(() => onStatus("Could not open data folder"))}>
-              Data folder
+              Open folder <span aria-hidden="true">›</span>
             </button>
             <button type="button" className="ghost-pill" onClick={() => void openLogFile().catch(() => onStatus("Could not open studio.log"))}>
               Log
@@ -663,19 +664,20 @@ export function SettingsView({
           </div>
         </section>
 
-        <section className="settings-group">
+        <section className={`settings-group settings-system-updates${pendingVersion ? " is-update-available" : ""}`}>
           <h3>Updates</h3>
           <p className="hint">Keep Studio current with the latest fixes and improvements.</p>
+          <p className="settings-system-version">Version {version}</p>
           <div className="update-line">
             <button type="button" className="ghost-pill" onClick={() => void checkUpdates()}>
-              Check
+              Check for updates
             </button>
             {pendingVersion ? (
               <button type="button" className="primary" onClick={() => void installUpdate()}>
                 Update to {pendingVersion}
               </button>
             ) : null}
-            <p className="update-note">{updateNote}</p>
+            <p className="update-note" aria-live="polite">{updateNote}</p>
           </div>
           {import.meta.env.DEV ? (
             <p className="hint">
