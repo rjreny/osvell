@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { type Accent, type Theme } from "../../core/types";
@@ -32,13 +32,13 @@ import {
   resetStudioData,
 } from "../../platform/install";
 import { log } from "../../platform/log";
-import { TasteModelList } from "../films/RecsView";
 import {
   checkAppUpdate,
   downloadAndInstallUpdate,
   type UpdateProgress,
 } from "../../platform/updater";
 import { UpdateOverlay } from "../../app/shell/UpdateOverlay";
+import { TasteModelModal } from "./TasteModelModal";
 
 const idleProgress: UpdateProgress = {
   phase: "idle",
@@ -102,6 +102,7 @@ export function SettingsView({
   const [updateProgress, setUpdateProgress] = useState<UpdateProgress>(idleProgress);
   const [keyStatus, setKeyStatus] = useState<TmdbKeyStatus | null>(null);
   const [tasteStatus, setTasteStatus] = useState<TasteKeyStatus | null>(null);
+  const [tasteModelOpen, setTasteModelOpen] = useState(false);
   const [replacing, setReplacing] = useState(false);
   const [tasteReplacing, setTasteReplacing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -112,6 +113,7 @@ export function SettingsView({
   const [lastImport, setLastImport] = useState<ImportResult | null>(null);
   const [lastEnrich, setLastEnrich] = useState<EnrichReport | null>(null);
   const [syncDetailsOpen, setSyncDetailsOpen] = useState(false);
+  const tasteModelChangeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     void (async () => {
@@ -295,6 +297,20 @@ export function SettingsView({
     }
   }
 
+  function closeTasteModelModal() {
+    setTasteModelOpen(false);
+    tasteModelChangeRef.current?.focus();
+  }
+
+  const tasteModelId = tasteStatus?.model ?? "deepseek/deepseek-v4-pro-0813";
+  const selectedTasteModel = tasteStatus?.models.find((model) => model.id === tasteModelId);
+  const tasteModelLabel =
+    selectedTasteModel?.label ??
+    (tasteModelId === "deepseek/deepseek-v4-pro-0813"
+      ? "DeepSeek V4 Pro 0813"
+      : tasteModelId);
+  const tasteModelBlurb =
+    selectedTasteModel?.blurb ?? "Recommended for nuanced, evidence-grounded film picks.";
   const keyConnected = Boolean(keyStatus?.stored && keyStatus.valid === true && !replacing);
   const tasteConnected = Boolean(tasteStatus?.stored && tasteStatus.valid !== false && !tasteReplacing);
   const established = libraryEstablished(coverage);
@@ -514,22 +530,23 @@ export function SettingsView({
         {section === "taste" ? (
         <section className="settings-group">
           <h2>Taste</h2>
-          <p className="hint">
-            Pay-as-you-go via{" "}
-            <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">
-              OpenRouter
-            </a>
-            . DeepSeek V4 Pro 0813 is the recommended default from the models your OpenRouter
-            privacy settings actually allow. Choose the reader and web access here.
-          </p>
-          <div className="field">
-            <span className="field-label">Model</span>
-            <TasteModelList
-              models={tasteStatus?.models ?? []}
-              selected={tasteStatus?.model ?? "deepseek/deepseek-v4-pro-0813"}
-              disabled={busy}
-              onPick={(id) => void pickTasteModel(id)}
-            />
+          <p className="hint">Choose how Taste reads your film history and whether it can check the web.</p>
+          <div className="settings-taste-model-row">
+            <div className="settings-taste-model-summary">
+              <span className="field-label">Recommendation model</span>
+              <strong>{tasteModelLabel}</strong>
+              <p className="hint">{tasteModelBlurb}</p>
+            </div>
+            <button
+              ref={tasteModelChangeRef}
+              type="button"
+              className="text-btn settings-taste-change"
+              aria-label="Change recommendation model"
+              disabled={busy || !(tasteStatus?.models.length)}
+              onClick={() => setTasteModelOpen(true)}
+            >
+              Change <span aria-hidden="true">›</span>
+            </button>
           </div>
           <div className="field">
             <span className="field-label">Web search</span>
@@ -555,7 +572,7 @@ export function SettingsView({
             <div className={tasteConnected ? "field is-key-connected" : "field"}>
               <label htmlFor="settings-openrouter">OpenRouter API key</label>
               {tasteConnected ? (
-                <p className="key-status is-ok">Saved in Windows Credential Manager</p>
+                <p className="key-status">Configured</p>
               ) : (
                 <input
                   id="settings-openrouter"
@@ -581,8 +598,14 @@ export function SettingsView({
                   Save key
                 </button>
               ) : (
-                <button type="button" className="ghost-pill" disabled={busy} onClick={() => setTasteReplacing(true)}>
-                  Replace key
+                <button
+                  type="button"
+                  className="ghost-pill"
+                  aria-label="Change OpenRouter key"
+                  disabled={busy}
+                  onClick={() => setTasteReplacing(true)}
+                >
+                  Change
                 </button>
               )}
               <button
@@ -597,7 +620,7 @@ export function SettingsView({
                   })
                 }
               >
-                Remove key
+                Remove
               </button>
             </div>
           </div>
@@ -679,6 +702,14 @@ export function SettingsView({
           setUpdateOpen(false);
           setUpdateProgress(idleProgress);
         }}
+      />
+      <TasteModelModal
+        open={tasteModelOpen}
+        models={tasteStatus?.models ?? []}
+        selected={tasteModelId}
+        disabled={busy}
+        onClose={closeTasteModelModal}
+        onPick={(id) => void pickTasteModel(id)}
       />
     </div>
   );

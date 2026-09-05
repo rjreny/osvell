@@ -1,12 +1,13 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LibraryCoverage } from "../../platform/types/film";
+import type { LibraryCoverage, TasteKeyStatus } from "../../platform/types/film";
 import { SettingsView } from "./SettingsView";
 
-const { getInstallInfo, listen, tasteKeyStatus, tmdbKeyStatus } = vi.hoisted(() => ({
+const { getInstallInfo, listen, tasteKeyStatus, tasteSetModel, tmdbKeyStatus } = vi.hoisted(() => ({
   getInstallInfo: vi.fn(),
   listen: vi.fn(),
   tasteKeyStatus: vi.fn(),
+  tasteSetModel: vi.fn(),
   tmdbKeyStatus: vi.fn(),
 }));
 
@@ -29,7 +30,7 @@ vi.mock("../../platform/filmLibrary", () => ({
   tasteClearKey: vi.fn(),
   tasteKeyStatus,
   tasteSetKey: vi.fn(),
-  tasteSetModel: vi.fn(),
+  tasteSetModel,
   tasteSetWeb: vi.fn(),
 }));
 vi.mock("../../platform/install", () => ({
@@ -57,7 +58,52 @@ const emptyCoverage: LibraryCoverage = {
   warnings: [],
 };
 
-function renderSettings({ coverage = emptyCoverage }: { coverage?: LibraryCoverage | null } = {}) {
+const statusWithFourModels: TasteKeyStatus = {
+  stored: false,
+  valid: null,
+  lastError: null,
+  model: "deepseek/deepseek-v4-pro-0813",
+  web: false,
+  models: [
+    {
+      id: "deepseek/deepseek-v4-pro-0813",
+      label: "DeepSeek V4 Pro 0813",
+      blurb: "Best overall reader for nuanced taste.",
+      context: "1M",
+      cost: "$0.30/M",
+    },
+    {
+      id: "google/gemini-3.7-flash",
+      label: "Gemini 3.7 Flash",
+      blurb: "Fast fallback for a lighter read.",
+      context: "1M",
+      cost: "$0.10/M",
+    },
+    {
+      id: "anthropic/claude-sonnet-4.5",
+      label: "Claude Sonnet 4.5",
+      blurb: "Measured reasoning with polished prose.",
+      context: "200K",
+      cost: "$3/M",
+    },
+    {
+      id: "openai/gpt-5.2",
+      label: "GPT-5.2",
+      blurb: "Broad film knowledge and clear synthesis.",
+      context: "400K",
+      cost: "$2/M",
+    },
+  ],
+};
+
+function renderSettings({
+  coverage = emptyCoverage,
+  tasteStatus,
+}: {
+  coverage?: LibraryCoverage | null;
+  tasteStatus?: TasteKeyStatus;
+} = {}) {
+  if (tasteStatus) tasteKeyStatus.mockResolvedValue(tasteStatus);
   return render(
     <SettingsView
       theme="system"
@@ -89,6 +135,7 @@ describe("SettingsView", () => {
       web: false,
       models: [],
     });
+    tasteSetModel.mockResolvedValue(statusWithFourModels);
     getInstallInfo.mockResolvedValue(null);
   });
 
@@ -208,5 +255,61 @@ describe("SettingsView", () => {
     expect(screen.getByRole("button", { name: "Change" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Remove" })).toBeInTheDocument();
     expect(screen.queryByText(/Credential Manager/i)).not.toBeInTheDocument();
+  });
+
+  it("does not show the full model zoo on the default Taste panel", async () => {
+    renderSettings({ tasteStatus: statusWithFourModels });
+    fireEvent.click(screen.getByRole("button", { name: "Taste" }));
+
+    expect(await screen.findByText("DeepSeek V4 Pro 0813")).toBeInTheDocument();
+    expect(screen.queryByText(/1M ·/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /change/i })).toBeInTheDocument();
+  });
+
+  it("opens a centered dialog for model selection", async () => {
+    renderSettings({ tasteStatus: statusWithFourModels });
+    fireEvent.click(screen.getByRole("button", { name: "Taste" }));
+    fireEvent.click(await screen.findByRole("button", { name: /change/i }));
+
+    const dialog = await screen.findByRole("dialog", { name: /recommendation model/i });
+    expect(dialog).toBeInTheDocument();
+    expect(dialog.className).toMatch(/taste-model-modal/);
+    expect(within(dialog).getAllByText(/1M/i)).toHaveLength(2);
+  });
+
+  it("applies a model choice and closes the dialog", async () => {
+    renderSettings({ tasteStatus: statusWithFourModels });
+    fireEvent.click(screen.getByRole("button", { name: "Taste" }));
+    fireEvent.click(await screen.findByRole("button", { name: /change/i }));
+    const dialog = await screen.findByRole("dialog", { name: /recommendation model/i });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: /Gemini 3.7 Flash/i }));
+
+    expect(screen.queryByRole("dialog", { name: /recommendation model/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(tasteSetModel).toHaveBeenCalledWith("google/gemini-3.7-flash"));
+  });
+
+  it("dismisses the model dialog with Escape and restores focus to Change", async () => {
+    renderSettings({ tasteStatus: statusWithFourModels });
+    fireEvent.click(screen.getByRole("button", { name: "Taste" }));
+    const change = await screen.findByRole("button", { name: /change/i });
+    fireEvent.click(change);
+    await screen.findByRole("dialog", { name: /recommendation model/i });
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog", { name: /recommendation model/i })).not.toBeInTheDocument();
+    expect(change).toHaveFocus();
+  });
+
+  it("dismisses the model dialog from its backdrop", async () => {
+    renderSettings({ tasteStatus: statusWithFourModels });
+    fireEvent.click(screen.getByRole("button", { name: "Taste" }));
+    fireEvent.click(await screen.findByRole("button", { name: /change/i }));
+    const dialog = await screen.findByRole("dialog", { name: /recommendation model/i });
+
+    fireEvent.click(dialog);
+
+    expect(screen.queryByRole("dialog", { name: /recommendation model/i })).not.toBeInTheDocument();
   });
 });
