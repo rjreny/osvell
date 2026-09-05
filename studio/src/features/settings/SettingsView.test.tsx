@@ -154,6 +154,19 @@ describe("SettingsView", () => {
     expect(screen.getByRole("button", { name: /sync now/i }).className).toMatch(/primary/);
   });
 
+  it("treats a meaningful movie count alone as an established library", () => {
+    renderSettings({
+      coverage: {
+        ...emptyCoverage,
+        uniqueMovies: 1,
+        source: "none",
+        fullHistoryAvailable: false,
+      },
+    });
+
+    expect(screen.getByRole("button", { name: /sync now/i }).className).toMatch(/primary/);
+  });
+
   it("keeps sync explanation collapsed until disclosed", () => {
     renderSettings({ coverage: emptyCoverage });
 

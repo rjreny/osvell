@@ -995,8 +995,11 @@ html[data-theme="light"] .scroll-thumb::before {
   width: auto;
 }
 
-.settings-library-panel .settings-key-row .key-status {
+.settings-key-row .key-status {
   margin: 0;
+}
+
+.settings-library-panel .settings-key-row .key-status {
   color: var(--text-muted);
   font-size: 13px;
 }
