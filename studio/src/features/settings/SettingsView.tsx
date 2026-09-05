@@ -467,26 +467,42 @@ export function SettingsView({
         ) : null}
 
         {section === "appearance" ? (
-        <section className="settings-group">
+        <section className="settings-group settings-appearance-panel">
             <h2>Appearance</h2>
             <p className="hint">Choose the theme and accent Studio uses on this PC.</p>
-            <div className="settings-inline-row settings-look-row">
+            <div className="settings-appearance-options">
               <div className="field">
                 <span className="field-label">Theme</span>
-                <div className="seg">
+                <div className="theme-preview-row" role="radiogroup" aria-label="Theme">
                   {(["system", "dark", "light"] as const).map((t) => (
-                    <button key={t} type="button" className={theme === t ? "is-on" : ""} onClick={() => onTheme(t)}>
-                      {t[0].toUpperCase() + t.slice(1)}
+                    <button
+                      key={t}
+                      type="button"
+                      role="radio"
+                      aria-checked={theme === t}
+                      className={`theme-preview is-${t}${theme === t ? " is-on" : ""}`}
+                      onClick={() => onTheme(t)}
+                    >
+                      <span className="theme-preview-surface" aria-hidden="true" />
+                      <span>{t[0].toUpperCase() + t.slice(1)}</span>
                     </button>
                   ))}
                 </div>
               </div>
               <div className="field">
                 <span className="field-label">Accent</span>
-                <div className="seg">
+                <div className="accent-radio-row" role="radiogroup" aria-label="Accent">
                   {(["app", "system"] as const).map((a) => (
-                    <button key={a} type="button" className={accent === a ? "is-on" : ""} onClick={() => onAccent(a)}>
-                      {a === "app" ? "App" : "System"}
+                    <button
+                      key={a}
+                      type="button"
+                      role="radio"
+                      aria-checked={accent === a}
+                      className={`accent-radio${accent === a ? " is-on" : ""}`}
+                      onClick={() => onAccent(a)}
+                    >
+                      <span className={`accent-radio-dot is-${a}`} aria-hidden="true" />
+                      <span>{a === "app" ? "Studio blue" : "System"}</span>
                     </button>
                   ))}
                 </div>

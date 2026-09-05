@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LibraryCoverage } from "../../platform/types/film";
 import { SettingsView } from "./SettingsView";
@@ -115,6 +115,25 @@ describe("SettingsView", () => {
 
     expect(screen.getByRole("heading", { name: "System", level: 2 })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Taste", level: 2 })).not.toBeInTheDocument();
+  });
+
+  it("presents theme choices as labeled previews", () => {
+    renderSettings();
+    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+
+    const themeChoices = within(screen.getByRole("radiogroup", { name: "Theme" }));
+    expect(themeChoices.getByRole("radio", { name: "System" })).toBeInTheDocument();
+    expect(themeChoices.getByRole("radio", { name: "Dark" })).toBeInTheDocument();
+    expect(themeChoices.getByRole("radio", { name: "Light" })).toBeInTheDocument();
+  });
+
+  it("presents Studio blue and System as quiet accent radios", () => {
+    renderSettings();
+    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+
+    const accentChoices = within(screen.getByRole("radiogroup", { name: "Accent" }));
+    expect(accentChoices.getByRole("radio", { name: "Studio blue" })).toBeInTheDocument();
+    expect(accentChoices.getByRole("radio", { name: "System" })).toBeInTheDocument();
   });
 
   it("makes Import history primary when the library is empty", () => {

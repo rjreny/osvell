@@ -1008,8 +1008,154 @@ html[data-theme="light"] .scroll-thumb::before {
   color: var(--danger);
 }
 
-.settings-look-row {
-  gap: 16px 24px;
+.settings-appearance-options {
+  display: grid;
+  gap: 18px;
+}
+
+.theme-preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.theme-preview {
+  display: grid;
+  width: 110px;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.theme-preview-surface {
+  position: relative;
+  display: block;
+  width: 110px;
+  height: 68px;
+  overflow: hidden;
+  border: 1px solid var(--preview-border);
+  border-radius: 8px;
+  background: var(--preview-bg);
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.theme-preview-surface::before,
+.theme-preview-surface::after {
+  content: "";
+  position: absolute;
+  border: 1px solid var(--preview-border);
+}
+
+.theme-preview-surface::before {
+  inset: 8px auto 8px 8px;
+  width: 12px;
+  border-radius: 3px;
+  background: var(--preview-rail);
+}
+
+.theme-preview-surface::after {
+  inset: 8px 8px 8px 27px;
+  border-radius: 5px;
+  background: var(--preview-surface);
+  box-shadow: inset 0 -13px 0 var(--preview-panel);
+}
+
+.theme-preview.is-system {
+  --preview-bg: linear-gradient(135deg, oklch(0.18 0.018 260) 0 49%, oklch(0.95 0.006 260) 51%);
+  --preview-rail: linear-gradient(135deg, oklch(0.24 0.022 260) 0 49%, oklch(0.88 0.008 260) 51%);
+  --preview-surface: linear-gradient(135deg, oklch(0.27 0.022 260) 0 49%, oklch(0.99 0.003 260) 51%);
+  --preview-panel: color-mix(in oklch, var(--text-muted) 12%, transparent);
+  --preview-border: oklch(0.55 0.018 260);
+}
+
+.theme-preview.is-dark {
+  --preview-bg: oklch(0.18 0.018 260);
+  --preview-rail: oklch(0.24 0.022 260);
+  --preview-surface: oklch(0.27 0.022 260);
+  --preview-panel: oklch(0.22 0.02 260);
+  --preview-border: oklch(0.38 0.024 260);
+}
+
+.theme-preview.is-light {
+  --preview-bg: oklch(0.95 0.006 260);
+  --preview-rail: oklch(0.88 0.008 260);
+  --preview-surface: oklch(0.99 0.003 260);
+  --preview-panel: oklch(0.92 0.01 260);
+  --preview-border: oklch(0.78 0.014 260);
+}
+
+.theme-preview:hover {
+  color: var(--text);
+}
+
+.theme-preview:hover .theme-preview-surface {
+  border-color: color-mix(in oklch, var(--accent) 52%, var(--preview-border));
+}
+
+.theme-preview.is-on {
+  color: var(--text);
+}
+
+.theme-preview.is-on .theme-preview-surface {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent) 28%, transparent);
+}
+
+.theme-preview:focus-visible {
+  outline: 0;
+}
+
+.theme-preview:focus-visible .theme-preview-surface {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.accent-radio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+}
+
+.accent-radio {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.accent-radio:hover,
+.accent-radio.is-on {
+  color: var(--text);
+}
+
+.accent-radio-dot {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: var(--accent-choice);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.accent-radio-dot.is-app {
+  --accent-choice: oklch(0.64 0.16 245);
+}
+
+.accent-radio-dot.is-system {
+  --accent-choice: AccentColor;
+}
+
+.accent-radio.is-on .accent-radio-dot {
+  box-shadow:
+    0 0 0 1px var(--text-muted),
+    0 0 0 3px color-mix(in oklch, var(--accent-choice) 24%, transparent);
 }
 
 .settings-page .field-row,
