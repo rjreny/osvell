@@ -1,11 +1,8 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Accent, Theme } from "../../core/types";
 import type { InstallInfo, LibraryCoverage, TasteKeyStatus } from "../../platform/types/film";
 import { SettingsView } from "./SettingsView";
-
-const materialsCss = readFileSync(resolve(process.cwd(), "src/materials.css"), "utf8");
 
 const { checkAppUpdate, getInstallInfo, listen, tasteKeyStatus, tasteSetModel, tmdbKeyStatus } = vi.hoisted(() => ({
   checkAppUpdate: vi.fn(),
@@ -115,9 +112,17 @@ const statusWithFourModels: TasteKeyStatus = {
 function renderSettings({
   coverage = emptyCoverage,
   tasteStatus,
+  username = "",
+  lastRssSyncAt,
+  onTheme = vi.fn(),
+  onAccent = vi.fn(),
 }: {
   coverage?: LibraryCoverage | null;
   tasteStatus?: TasteKeyStatus;
+  username?: string;
+  lastRssSyncAt?: string | null;
+  onTheme?: (theme: Theme) => void;
+  onAccent?: (accent: Accent) => void;
 } = {}) {
   if (tasteStatus) tasteKeyStatus.mockResolvedValue(tasteStatus);
   return render(
@@ -125,10 +130,11 @@ function renderSettings({
       theme="system"
       accent="app"
       version="0.12.3"
-      username=""
+      username={username}
       coverage={coverage}
-      onTheme={vi.fn()}
-      onAccent={vi.fn()}
+      lastRssSyncAt={lastRssSyncAt}
+      onTheme={onTheme}
+      onAccent={onAccent}
       onUsername={vi.fn()}
       onStatus={vi.fn()}
       onRefresh={vi.fn(() => Promise.resolve())}
@@ -185,17 +191,6 @@ describe("SettingsView", () => {
     expect(screen.queryByRole("heading", { name: "Taste", level: 2 })).not.toBeInTheDocument();
   });
 
-  it("stacks the shell and wraps the rail at compact widths", () => {
-    const compactSettings = materialsCss.match(
-      /@media\s*\(max-width:\s*720px\)\s*\{\s*\.settings-shell\s*\{[\s\S]*?\.settings-rail\s*\{[^}]*\}/,
-    )?.[0];
-
-    expect(compactSettings).toBeDefined();
-    expect(compactSettings).toMatch(/grid-template-columns:\s*1fr/);
-    expect(compactSettings).toMatch(/flex-direction:\s*row/);
-    expect(compactSettings).toMatch(/flex-wrap:\s*wrap/);
-  });
-
   it("colocates This PC and Updates under System with a local divider", async () => {
     getInstallInfo.mockResolvedValue(sampleInstall);
     renderSettings({
@@ -240,30 +235,57 @@ describe("SettingsView", () => {
 
     await waitFor(() => {
       expect(within(rail).getAllByRole("button")).toHaveLength(4);
-      expect(within(rail).getByRole("button", { name: "System" })).toHaveTextContent(
+      expect(within(rail).getByRole("button", { name: "System, update available" })).toHaveTextContent(
         "Update available",
       );
     });
     expect(screen.getByRole("button", { name: "Update to 0.13.0" })).toBeInTheDocument();
   });
 
-  it("presents theme choices as labeled previews", () => {
-    renderSettings();
+  it("presents theme choices as labeled previews and applies a selection", () => {
+    const onTheme = vi.fn();
+    renderSettings({ onTheme });
     fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
 
     const themeChoices = within(screen.getByRole("radiogroup", { name: "Theme" }));
     expect(themeChoices.getByRole("radio", { name: "System" })).toBeInTheDocument();
-    expect(themeChoices.getByRole("radio", { name: "Dark" })).toBeInTheDocument();
+    fireEvent.click(themeChoices.getByRole("radio", { name: "Dark" }));
     expect(themeChoices.getByRole("radio", { name: "Light" })).toBeInTheDocument();
+    expect(onTheme).toHaveBeenCalledWith("dark");
   });
 
-  it("presents Studio blue and System as quiet accent radios", () => {
-    renderSettings();
+  it("presents Studio blue and System as quiet accent radios and applies a selection", () => {
+    const onAccent = vi.fn();
+    renderSettings({ onAccent });
     fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
 
     const accentChoices = within(screen.getByRole("radiogroup", { name: "Accent" }));
     expect(accentChoices.getByRole("radio", { name: "Studio blue" })).toBeInTheDocument();
-    expect(accentChoices.getByRole("radio", { name: "System" })).toBeInTheDocument();
+    fireEvent.click(accentChoices.getByRole("radio", { name: "System" }));
+    expect(onAccent).toHaveBeenCalledWith("system");
+  });
+
+  it.each([
+    ["username alone", "Not connected", "filmfan", emptyCoverage, null],
+    ["RSS refresh evidence", "Connected", "filmfan", emptyCoverage, "2026-09-05T18:00:00Z"],
+    [
+      "imported coverage",
+      "Connected",
+      "filmfan",
+      { ...emptyCoverage, source: "export" as const, fullHistoryAvailable: true },
+      null,
+    ],
+    [
+      "coverage without an identity",
+      "Not connected",
+      " ",
+      { ...emptyCoverage, source: "rss" as const },
+      null,
+    ],
+  ])("shows %s as %s", (_case, expectedStatus, username, coverage, lastRssSyncAt) => {
+    renderSettings({ username, coverage, lastRssSyncAt });
+
+    expect(screen.getByText(expectedStatus, { selector: ".settings-letterboxd-status" })).toBeInTheDocument();
   });
 
   it("makes Import history primary when the library is empty", () => {

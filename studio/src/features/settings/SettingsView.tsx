@@ -314,6 +314,12 @@ export function SettingsView({
   const keyConnected = Boolean(keyStatus?.stored && keyStatus.valid === true && !replacing);
   const tasteConnected = Boolean(tasteStatus?.stored && tasteStatus.valid !== false && !tasteReplacing);
   const established = libraryEstablished(coverage);
+  const letterboxdConnected = Boolean(
+    username.trim() &&
+      (lastRssSyncAt ||
+        (coverage &&
+          (coverage.source !== "none" || coverage.fullHistoryAvailable))),
+  );
 
   async function confirmResetData() {
     const ok = await ask(
@@ -354,7 +360,11 @@ export function SettingsView({
               key={id}
               type="button"
               className={section === id ? "is-on" : undefined}
-              aria-label={LABELS[id]}
+              aria-label={
+                id === "system" && pendingVersion
+                  ? "System, update available"
+                  : LABELS[id]
+              }
               aria-current={section === id ? "page" : undefined}
               onClick={() => setSection(id)}
             >
@@ -379,6 +389,11 @@ export function SettingsView({
                 onChange={(e) => onUsername(e.target.value)}
                 placeholder="username"
               />
+              <p
+                className={`hint settings-letterboxd-status${letterboxdConnected ? "" : " is-bad"}`}
+              >
+                {letterboxdConnected ? "Connected" : "Not connected"}
+              </p>
             </div>
             <div className="field-row">
               <button
