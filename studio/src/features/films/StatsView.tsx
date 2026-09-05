@@ -53,39 +53,6 @@ function activityMonthLabel(label: string, index: number, total: number) {
   return `${month}/${year.slice(2)}`;
 }
 
-function affinityTone(rating: number | null) {
-  if (rating == null || rating < 3) return "is-low";
-  if (rating < 3.75) return "is-mid";
-  return "is-high";
-}
-
-function GenreAffinity({ genres }: { genres: StatsBucket[] }) {
-  const maxCount = Math.max(1, ...genres.map((genre) => genre.count));
-  return (
-    <div className="stats-affinity-plot" role="img" aria-label="Genre affinity: farther right means you have watched more films in that genre; higher and greener means you rated it more highly.">
-      <span className="stats-affinity-y">Higher rated</span>
-      <span className="stats-affinity-x">More watched</span>
-      {genres.map((genre) => {
-        const rating = genre.averageRating ?? 0;
-        const left = 8 + (genre.count / maxCount) * 82;
-        const bottom = 10 + (Math.max(0, Math.min(5, rating)) / 5) * 76;
-        return (
-          <span
-            key={genre.label}
-            className={`stats-affinity-point ${affinityTone(genre.averageRating)}`}
-            style={{ left: `${left}%`, bottom: `${bottom}%` }}
-            title={`${genre.label}: ${genre.count} films${genre.averageRating != null ? `, ${genre.averageRating.toFixed(1)} average rating` : ""}`}
-          >
-            <i />
-            <b>{genre.label}</b>
-          </span>
-        );
-      })}
-      {!genres.length ? <p>No enriched viewing data yet</p> : null}
-    </div>
-  );
-}
-
 export function StatsView({ onSelectFilm }: { onSelectFilm: (id: string) => void }) {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [coverage, setCoverage] = useState<LibraryCoverage | null>(null);
@@ -166,15 +133,37 @@ export function StatsView({ onSelectFilm }: { onSelectFilm: (id: string) => void
           <h1>Stats</h1>
           <p className="muted">Your log, as numbers</p>
         </div>
+        <span className="stats-scope">All time</span>
       </header>
-      <p className="stats-summary" aria-label="Library summary">
-        <span><strong>{coverage?.uniqueMovies ?? items.length}</strong> films</span>
-        <span><strong>{coverage?.totalViewings ?? 0}</strong> watches</span>
-        <span><strong>{snapshot?.rewatchCount ?? 0}</strong> rewatches</span>
-        <span><strong>{formatHours(snapshot?.totalRuntimeMinutes ?? 0)}</strong> watched</span>
-        <span><strong>{averageRating?.toFixed(1) ?? "—"}</strong> average rating</span>
-        <span><strong>{coverage?.watchlistMovies ?? 0}</strong> on your watchlist</span>
-      </p>
+      <ol className="stats-overview" aria-label="Viewing overview">
+        <li>
+          <strong>{coverage?.uniqueMovies ?? items.length}</strong>
+          <span>Films</span>
+        </li>
+        <li>
+          <strong>{coverage?.totalViewings ?? 0}</strong>
+          <span>Watches</span>
+          <small>{snapshot?.rewatchCount ?? 0} rewatches</small>
+        </li>
+        <li>
+          <strong>{formatHours(snapshot?.totalRuntimeMinutes ?? 0)}</strong>
+          <span>Hours watched</span>
+        </li>
+        <li>
+          <strong>{averageRating?.toFixed(1) ?? "—"}</strong>
+          <span>Average rating</span>
+          <small>{ratings.length} rated</small>
+        </li>
+      </ol>
+      {mostRewatched.length ? (
+        <section className="stats-shelf">
+          <Shelf title="Most rewatched">
+            {mostRewatched.map((film) => (
+              <FilmCard key={film.id} film={film} caption={`${film.viewingCount}× watched`} onSelect={onSelectFilm} />
+            ))}
+          </Shelf>
+        </section>
+      ) : null}
       <div className="stats-breakdown stats-primary-row">
         <section className="stats-section stats-ratings">
           <header className="stats-section-head">
@@ -200,13 +189,6 @@ export function StatsView({ onSelectFilm }: { onSelectFilm: (id: string) => void
             <div><dt>Enriched</dt><dd>{snapshot?.metadataMovies ?? 0}</dd></div>
           </dl>
         </section>
-        <section className="stats-section stats-affinity">
-          <header className="stats-section-head">
-            <h2>Genre affinity</h2>
-            <p>More watched → · higher rated ↑</p>
-          </header>
-          <GenreAffinity genres={genres} />
-        </section>
       </div>
       <section className="stats-section stats-activity">
         <header className="stats-section-head">
@@ -231,15 +213,6 @@ export function StatsView({ onSelectFilm }: { onSelectFilm: (id: string) => void
           </ol>
         ) : <p className="stats-empty">No enriched viewing data yet.</p>}
       </section>
-      {mostRewatched.length ? (
-        <section className="stats-shelf">
-          <Shelf title="Most rewatched">
-            {mostRewatched.map((film) => (
-              <FilmCard key={film.id} film={film} caption={`${film.viewingCount}× watched`} onSelect={onSelectFilm} />
-            ))}
-          </Shelf>
-        </section>
-      ) : null}
       {topRated.length ? (
         <section className="stats-shelf">
           <Shelf title="Highest rated">
