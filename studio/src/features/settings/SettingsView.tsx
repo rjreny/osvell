@@ -484,7 +484,7 @@ export function SettingsView({
         ) : null}
 
         {section === "appearance" ? (
-        <section className="settings-group settings-appearance-panel">
+        <section className="settings-group">
             <h2>Appearance</h2>
             <p className="hint">Choose the theme and accent Studio uses on this PC.</p>
             <div className="settings-appearance-options">

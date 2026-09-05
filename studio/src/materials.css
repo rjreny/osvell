@@ -1362,6 +1362,31 @@ html[data-theme="light"] .scroll-thumb::before {
 }
 
 @media (max-width: 720px) {
+  .settings-shell {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .settings-rail {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .settings-rail button {
+    flex: 0 1 auto;
+    width: auto;
+    min-height: 44px;
+    padding-inline: 12px;
+    border-left: 0;
+    border-bottom: 2px solid transparent;
+  }
+
+  .settings-rail button.is-on {
+    border-left-color: transparent;
+    border-bottom-color: var(--accent);
+  }
+
   .taste-model-modal {
     padding: 16px;
   }

@@ -1,7 +1,11 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InstallInfo, LibraryCoverage, TasteKeyStatus } from "../../platform/types/film";
 import { SettingsView } from "./SettingsView";
+
+const materialsCss = readFileSync(resolve(process.cwd(), "src/materials.css"), "utf8");
 
 const { checkAppUpdate, getInstallInfo, listen, tasteKeyStatus, tasteSetModel, tmdbKeyStatus } = vi.hoisted(() => ({
   checkAppUpdate: vi.fn(),
@@ -151,29 +155,45 @@ describe("SettingsView", () => {
     getInstallInfo.mockResolvedValue(null);
   });
 
-  it("exposes exactly four rail destinations and shows one panel at a time", () => {
+  it("exposes the four named rail destinations and shows one panel at a time", () => {
     renderSettings({ coverage: emptyCoverage });
 
-    expect(screen.getByRole("navigation", { name: /settings/i })).toBeInTheDocument();
-    expect(
-      screen.getAllByRole("button", { name: /^(Library|Appearance|Taste|System)$/ }),
-    ).toHaveLength(4);
+    const rail = screen.getByRole("navigation", { name: "Settings" });
+    const destinations = within(rail).getAllByRole("button");
+    expect(destinations).toHaveLength(4);
+    expect(destinations.map((destination) => destination.getAttribute("aria-label"))).toEqual([
+      "Library",
+      "Appearance",
+      "Taste",
+      "System",
+    ]);
     expect(screen.getByRole("heading", { name: "Library", level: 2 })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
+    fireEvent.click(within(rail).getByRole("button", { name: "Appearance" }));
 
     expect(screen.getByRole("heading", { name: "Appearance", level: 2 })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Library", level: 2 })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Taste" }));
+    fireEvent.click(within(rail).getByRole("button", { name: "Taste" }));
 
     expect(screen.getByRole("heading", { name: "Taste", level: 2 })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Appearance", level: 2 })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "System" }));
+    fireEvent.click(within(rail).getByRole("button", { name: "System" }));
 
     expect(screen.getByRole("heading", { name: "System", level: 2 })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Taste", level: 2 })).not.toBeInTheDocument();
+  });
+
+  it("stacks the shell and wraps the rail at compact widths", () => {
+    const compactSettings = materialsCss.match(
+      /@media\s*\(max-width:\s*720px\)\s*\{\s*\.settings-shell\s*\{[\s\S]*?\.settings-rail\s*\{[^}]*\}/,
+    )?.[0];
+
+    expect(compactSettings).toBeDefined();
+    expect(compactSettings).toMatch(/grid-template-columns:\s*1fr/);
+    expect(compactSettings).toMatch(/flex-direction:\s*row/);
+    expect(compactSettings).toMatch(/flex-wrap:\s*wrap/);
   });
 
   it("colocates This PC and Updates under System with a local divider", async () => {
@@ -326,13 +346,13 @@ describe("SettingsView", () => {
 
     expect(await screen.findByText("DeepSeek V4 Pro 0813")).toBeInTheDocument();
     expect(screen.queryByText(/1M ·/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /change/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change recommendation model" })).toBeInTheDocument();
   });
 
   it("opens a centered dialog for model selection", async () => {
     renderSettings({ tasteStatus: statusWithFourModels });
     fireEvent.click(screen.getByRole("button", { name: "Taste" }));
-    fireEvent.click(await screen.findByRole("button", { name: /change/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Change recommendation model" }));
 
     const dialog = await screen.findByRole("dialog", { name: /recommendation model/i });
     expect(dialog).toBeInTheDocument();
@@ -343,7 +363,7 @@ describe("SettingsView", () => {
   it("applies a model choice and closes the dialog", async () => {
     renderSettings({ tasteStatus: statusWithFourModels });
     fireEvent.click(screen.getByRole("button", { name: "Taste" }));
-    fireEvent.click(await screen.findByRole("button", { name: /change/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Change recommendation model" }));
     const dialog = await screen.findByRole("dialog", { name: /recommendation model/i });
 
     fireEvent.click(within(dialog).getByRole("button", { name: /Gemini 3.7 Flash/i }));
@@ -355,7 +375,7 @@ describe("SettingsView", () => {
   it("dismisses the model dialog with Escape and restores focus to Change", async () => {
     renderSettings({ tasteStatus: statusWithFourModels });
     fireEvent.click(screen.getByRole("button", { name: "Taste" }));
-    const change = await screen.findByRole("button", { name: /change/i });
+    const change = await screen.findByRole("button", { name: "Change recommendation model" });
     fireEvent.click(change);
     await screen.findByRole("dialog", { name: /recommendation model/i });
 
@@ -368,11 +388,13 @@ describe("SettingsView", () => {
   it("dismisses the model dialog from its backdrop", async () => {
     renderSettings({ tasteStatus: statusWithFourModels });
     fireEvent.click(screen.getByRole("button", { name: "Taste" }));
-    fireEvent.click(await screen.findByRole("button", { name: /change/i }));
+    const change = await screen.findByRole("button", { name: "Change recommendation model" });
+    fireEvent.click(change);
     const dialog = await screen.findByRole("dialog", { name: /recommendation model/i });
 
     fireEvent.click(dialog);
 
     expect(screen.queryByRole("dialog", { name: /recommendation model/i })).not.toBeInTheDocument();
+    expect(change).toHaveFocus();
   });
 });
