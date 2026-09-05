@@ -840,17 +840,18 @@ html[data-theme="light"] .scroll-thumb::before {
   .connection-summary { max-width: 42%; white-space: normal; }
 }
 
-/* Settings uses a bounded rail and one active preference panel. */
+/* Settings uses a bounded, centered preference shell — not a corner island. */
 .settings-page > .page-head,
 .settings-shell {
   width: 100%;
-  max-width: 960px;
+  max-width: 1080px;
+  margin-inline: auto;
 }
 
 .settings-shell {
   display: grid;
-  grid-template-columns: 160px minmax(0, 1fr);
-  gap: 28px 32px;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 28px 40px;
 }
 
 .settings-rail {
@@ -900,7 +901,6 @@ html[data-theme="light"] .scroll-thumb::before {
 
 .settings-panel {
   width: 100%;
-  max-width: 720px;
   min-width: 0;
 }
 
@@ -915,8 +915,8 @@ html[data-theme="light"] .scroll-thumb::before {
   border-top: 0;
 }
 
-.settings-page .settings-group h2 {
-  margin-bottom: 6px;
+.settings-page > .page-head {
+  margin-bottom: 28px;
 }
 
 .settings-system-panel > h2 {
@@ -973,8 +973,9 @@ html[data-theme="light"] .scroll-thumb::before {
 }
 
 .settings-library-row > .field {
-  flex: 0 1 360px;
-  width: min(100%, 360px);
+  flex: 1 1 280px;
+  min-width: min(100%, 240px);
+  max-width: 420px;
 }
 
 .settings-sync-disclosure {
@@ -1002,8 +1003,8 @@ html[data-theme="light"] .scroll-thumb::before {
 }
 
 .settings-key-row > .field {
-  flex: 0 1 440px;
-  width: min(100%, 440px);
+  flex: 1 1 280px;
+  min-width: min(100%, 240px);
 }
 
 .settings-key-row > .field.is-key-connected {
@@ -1037,7 +1038,7 @@ html[data-theme="light"] .scroll-thumb::before {
 
 .theme-preview {
   display: grid;
-  width: 110px;
+  width: 132px;
   gap: 6px;
   padding: 0;
   border: 0;
@@ -1051,8 +1052,8 @@ html[data-theme="light"] .scroll-thumb::before {
 .theme-preview-surface {
   position: relative;
   display: block;
-  width: 110px;
-  height: 68px;
+  width: 132px;
+  height: 80px;
   overflow: hidden;
   border: 1px solid var(--preview-border);
   border-radius: 8px;
