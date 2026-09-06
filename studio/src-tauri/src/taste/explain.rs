@@ -78,9 +78,22 @@ pub struct EligibilityTrace {
     /// 1.0 = specific visual/story/craft overlap; ~0.3 = person-only.
     #[serde(default = "default_candidate_fit")]
     pub candidate_fit: f32,
-    /// One stored decision. Scoring, eligibility, and board membership all read this.
+    /// Legacy Strong/Medium grade — logged only; New admission ignores this after C1.
     #[serde(default)]
     pub evidence_grade: EvidenceGrade,
+    /// Content Fit_v1 on 0..=1 (`(score + 1) * 0.5`).
+    #[serde(default)]
+    pub predicted_fit: f32,
+    /// Content-family confidence (orthogonal to fit).
+    #[serde(default)]
+    pub confidence: f32,
+    #[serde(default)]
+    pub hydration_completeness: f32,
+    /// C1 decision state: recommended | exploratory | held.
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub primary_reason: String,
 }
 
 impl Default for EligibilityTrace {
@@ -91,6 +104,11 @@ impl Default for EligibilityTrace {
             passed_because: Vec::new(),
             candidate_fit: 1.0,
             evidence_grade: EvidenceGrade::None,
+            predicted_fit: 0.0,
+            confidence: 0.0,
+            hydration_completeness: 0.0,
+            state: "held".into(),
+            primary_reason: String::new(),
         }
     }
 }
@@ -108,6 +126,9 @@ pub fn retrieval_kind_label(kind: RetrievalKind) -> &'static str {
         | RetrievalKind::RelatedRecommendations
         | RetrievalKind::RelatedSimilar => "related",
         RetrievalKind::Filmography => "filmography",
+        RetrievalKind::Collection => "collection",
+        RetrievalKind::SemanticFilmLocal => "semanticFilmLocal",
+        RetrievalKind::SemanticProfile => "semanticProfile",
         RetrievalKind::Friend => "friend",
         RetrievalKind::Watchlist => "watchlist",
         RetrievalKind::Exploration => "exploration",
@@ -346,6 +367,16 @@ pub fn format_provenance(sources: &[RetrievalSource]) -> String {
                     parts.push(format!("Filmography · {name}"));
                 }
             }
+            RetrievalKind::Collection => {
+                let name = src.label.trim();
+                if name.is_empty() {
+                    parts.push("Same collection".into());
+                } else {
+                    parts.push(name.to_string());
+                }
+            }
+            RetrievalKind::SemanticFilmLocal => parts.push("Semantically near a liked film".into()),
+            RetrievalKind::SemanticProfile => parts.push("Matches your overall taste".into()),
             RetrievalKind::Friend => parts.push("Friends".into()),
             RetrievalKind::Discovery => parts.push("Discovery".into()),
             RetrievalKind::Exploration => parts.push("Exploration".into()),
@@ -379,6 +410,7 @@ pub fn eligibility_trace(
         passed_because,
         candidate_fit: 1.0,
         evidence_grade: EvidenceGrade::None,
+        ..Default::default()
     }
 }
 
@@ -553,12 +585,16 @@ mod tests {
                 label: "watchlist".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::Watchlist,
                 label: "watchlist".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
         ];
         assert_eq!(format_provenance(&sources), "On your watchlist");
@@ -572,24 +608,32 @@ mod tests {
                 label: "Christopher Nolan".into(),
                 seed_tmdb_id: Some(155),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::Filmography,
                 label: "Wally Pfister".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::Filmography,
                 label: "Christopher Nolan".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::Watchlist,
                 label: "watchlist".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
         ];
         let line = format_provenance(&sources);
@@ -600,6 +644,8 @@ mod tests {
                 label: "similar to A Minecraft Movie".into(),
                 seed_tmdb_id: Some(1),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }]),
             "Related to A Minecraft Movie"
         );

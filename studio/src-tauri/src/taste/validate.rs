@@ -150,6 +150,8 @@ mod tests {
                     label: format!("{director} {id}"),
                     seed_tmdb_id: None,
                     seed_rating: None,
+                    similarity: None,
+                    neighbor_rank: None,
                 }],
                 directors: vec![director.into()],
                 genres: vec!["Crime".into()],
@@ -157,6 +159,7 @@ mod tests {
                 media_kind: crate::taste::retrieve::MediaKind::Movie,
                 runtime: Some(110),
                 vote_count: Some(400),
+                semantic_cluster: None,
             },
             score: CandidateScore {
                 content: 0.5,
@@ -211,6 +214,7 @@ mod tests {
                 passed_because: vec!["craft".into()],
                 candidate_fit: 1.0,
                 evidence_grade: crate::taste::explain::EvidenceGrade::Medium,
+                ..Default::default()
             },
         }
     }
@@ -288,12 +292,16 @@ mod tests {
                 label: "Christopher Nolan".into(),
                 seed_tmdb_id: Some(155),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::Watchlist,
                 label: "watchlist".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
         ];
         c.person_keys = vec!["Christopher Nolan".into(), "Wally Pfister".into()];

@@ -3,7 +3,7 @@ use crate::taste::features::FeatureProfile;
 use crate::taste::retrieve::{identity_key, seen_keys, FilmRecord};
 use crate::storage::db::Database;
 use crate::taste::semantic::SemanticStats;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Default)]
@@ -17,6 +17,90 @@ pub struct LayeredMetrics {
     pub ndcg_at_12: f32,
     pub precision_at_40: f32,
     pub recall_at_40: f32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardEval {
+    pub holdout_hit_rate_at_50: f32,
+    pub holdout_ndcg_at_12: f32,
+    pub disliked_in_top_20: usize,
+    pub probe_weak_in_top_20: usize,
+    pub strong_fit_share: f32,
+    pub board_count: usize,
+}
+
+pub fn evaluate_displayed_board(
+    new_picks: &[ScoredCandidate],
+    films: &[FilmRecord],
+    probe_weak_titles: &[&str],
+) -> BoardEval {
+    let top = &new_picks[..new_picks.len().min(20)];
+    let disliked_seed_ids: HashSet<i64> = films
+        .iter()
+        .filter(|film| film.rating.map(|rating| rating <= 2.5).unwrap_or(false))
+        .filter_map(|film| film.tmdb_id)
+        .collect();
+    let disliked_in_top_20 = top
+        .iter()
+        .filter(|candidate| {
+            let from_disliked_seed = candidate.candidate.sources.iter().any(|source| {
+                source
+                    .seed_tmdb_id
+                    .map(|id| disliked_seed_ids.contains(&id))
+                    .unwrap_or(false)
+                    || source.seed_rating.map(|rating| rating <= 2.5).unwrap_or(false)
+            });
+            from_disliked_seed
+                || (!candidate.negative_features.is_empty() && candidate.score.total < 0.08)
+        })
+        .count();
+    let probe_weak_in_top_20 = top
+        .iter()
+        .filter(|candidate| {
+            probe_weak_titles.iter().any(|probe| {
+                candidate
+                    .candidate
+                    .title
+                    .trim()
+                    .eq_ignore_ascii_case(probe.trim())
+            })
+        })
+        .count();
+    let strong_count = top
+        .iter()
+        .filter(|candidate| {
+            candidate.eligibility.evidence_grade
+                == crate::taste::explain::EvidenceGrade::Strong
+                || candidate.score.total >= 0.15
+        })
+        .count();
+
+    BoardEval {
+        disliked_in_top_20,
+        probe_weak_in_top_20,
+        strong_fit_share: if top.is_empty() {
+            0.0
+        } else {
+            strong_count as f32 / top.len() as f32
+        },
+        board_count: new_picks.len(),
+        ..Default::default()
+    }
+}
+
+pub fn evaluate_holdout_retrieval(
+    retrieved_ids: &[String],
+    scored_ids: &[String],
+    held_out: &HashSet<String>,
+) -> BoardEval {
+    let metrics = layered(retrieved_ids, scored_ids, held_out);
+    BoardEval {
+        holdout_hit_rate_at_50: metrics.recall_at_50,
+        holdout_ndcg_at_12: metrics.ndcg_at_12,
+        board_count: scored_ids.len(),
+        ..Default::default()
+    }
 }
 
 pub fn recall_at(retrieved: &[String], held_out: &HashSet<String>, k: usize) -> f32 {
@@ -134,6 +218,420 @@ pub fn time_aware_replay_inputs(films: &[FilmRecord], holdout_count: usize) -> R
         held_out,
         seen,
     }
+}
+
+/// Rating bucket for stratified holdouts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RatingBucket {
+    Loved,
+    Liked,
+    Meh,
+    Disliked,
+}
+
+pub fn rating_bucket(rating: f32) -> RatingBucket {
+    if rating >= 4.5 {
+        RatingBucket::Loved
+    } else if rating >= 3.5 {
+        RatingBucket::Liked
+    } else if rating >= 2.5 {
+        RatingBucket::Meh
+    } else {
+        RatingBucket::Disliked
+    }
+}
+
+fn era_stratum(year: Option<i32>) -> u8 {
+    match year.unwrap_or(0) {
+        y if y >= 2015 => 0,
+        y if y >= 2000 => 1,
+        y if y >= 1985 => 2,
+        y if y > 0 => 3,
+        _ => 4,
+    }
+}
+
+fn popularity_stratum(vote_count: Option<i64>) -> u8 {
+    match vote_count.unwrap_or(0) {
+        v if v >= 5000 => 0,
+        v if v >= 500 => 1,
+        v if v >= 50 => 2,
+        _ => 3,
+    }
+}
+
+/// Deterministic split of rated films. Held-out identities are removed from
+/// training history (profile, seeds, affinities, seen). Public catalog metadata
+/// about a held-out title may still appear once another path discovers it.
+pub fn stratified_holdout_inputs(
+    films: &[FilmRecord],
+    seed: u64,
+    holdout_frac: f32,
+) -> ReplayInputs {
+    let holdout_frac = holdout_frac.clamp(0.05, 0.35);
+    let mut rated: Vec<&FilmRecord> = films.iter().filter(|f| f.rating.is_some()).collect();
+    rated.sort_by(|a, b| {
+        a.tmdb_id
+            .unwrap_or(0)
+            .cmp(&b.tmdb_id.unwrap_or(0))
+            .then_with(|| a.title.cmp(&b.title))
+    });
+
+    use std::collections::HashMap;
+    let mut strata: HashMap<(RatingBucket, u8, u8), Vec<&FilmRecord>> = HashMap::new();
+    for film in &rated {
+        let rating = film.rating.unwrap_or(0.0);
+        let key = (
+            rating_bucket(rating),
+            era_stratum(film.year),
+            popularity_stratum(film.vote_count),
+        );
+        strata.entry(key).or_default().push(*film);
+    }
+
+    let mut held_out: HashSet<String> = HashSet::new();
+    let mut stratum_keys: Vec<_> = strata.keys().copied().collect();
+    stratum_keys.sort_by_key(|a| {
+        let bucket = match a.0 {
+            RatingBucket::Loved => 0u8,
+            RatingBucket::Liked => 1,
+            RatingBucket::Meh => 2,
+            RatingBucket::Disliked => 3,
+        };
+        (bucket, a.1, a.2)
+    });
+    for key in stratum_keys {
+        let Some(members) = strata.get_mut(&key) else {
+            continue;
+        };
+        members.sort_by(|a, b| {
+            a.tmdb_id
+                .unwrap_or(0)
+                .cmp(&b.tmdb_id.unwrap_or(0))
+                .then_with(|| a.title.cmp(&b.title))
+        });
+        let n = members.len();
+        let take = ((n as f32) * holdout_frac).round() as usize;
+        let take = if n >= 5 {
+            take.max(1).min(n.saturating_sub(1))
+        } else if n >= 2 && holdout_frac >= 0.1 {
+            1.min(n.saturating_sub(1))
+        } else {
+            0
+        };
+        if take == 0 {
+            continue;
+        }
+        // Stable pseudo-random offset inside the stratum.
+        let bucket = match key.0 {
+            RatingBucket::Loved => 0u64,
+            RatingBucket::Liked => 1,
+            RatingBucket::Meh => 2,
+            RatingBucket::Disliked => 3,
+        };
+        let mut state = seed
+            ^ (bucket << 48)
+            ^ ((key.1 as u64) << 32)
+            ^ ((key.2 as u64) << 16)
+            ^ (n as u64);
+        state = state.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
+        let start = (state as usize) % n;
+        for i in 0..take {
+            let film = members[(start + i) % n];
+            held_out.insert(identity_key(film.tmdb_id, &film.title, film.year));
+        }
+    }
+
+    let training_films: Vec<FilmRecord> = films
+        .iter()
+        .filter(|film| !held_out.contains(&identity_key(film.tmdb_id, &film.title, film.year)))
+        .cloned()
+        .collect();
+    let seen = seen_keys(&training_films);
+    let profile = crate::taste::feature_profile_from_films(&training_films);
+    ReplayInputs {
+        training_films,
+        profile,
+        held_out,
+        seen,
+    }
+}
+
+/// Default fold seeds for the Milestone A benchmark artifact.
+pub const BENCHMARK_SEEDS: [u64; 5] = [17, 42, 101, 256, 777];
+pub const BENCHMARK_HOLDOUT_FRAC: f32 = 0.15;
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceCoverage {
+    pub related: f32,
+    pub filmography: f32,
+    pub collection: f32,
+    pub semantic_film_local: f32,
+    pub semantic_profile: f32,
+    pub studio: f32,
+    pub multiple: f32,
+    pub other: f32,
+    pub recovered: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetrievalFoldMetrics {
+    pub seed: u64,
+    pub held_out_positives: usize,
+    pub held_out_total: usize,
+    pub candidate_pool_size: usize,
+    pub retrieval_recall_at_100: f32,
+    pub retrieval_recall_at_250: f32,
+    pub retrieval_recall_at_1000: f32,
+    pub source_coverage: SourceCoverage,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricSummary {
+    pub mean: f32,
+    pub min: f32,
+    pub max: f32,
+    pub stdev: f32,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetrievalBenchmarkReport {
+    pub protocol: String,
+    pub algorithm_version: String,
+    pub rated_films: usize,
+    pub folds: usize,
+    pub holdout_frac: f32,
+    pub seeds: Vec<u64>,
+    pub fold_metrics: Vec<RetrievalFoldMetrics>,
+    pub recall_at_100: MetricSummary,
+    pub recall_at_250: MetricSummary,
+    pub recall_at_1000: MetricSummary,
+    pub candidate_pool_size: MetricSummary,
+    pub mean_source_coverage: SourceCoverage,
+}
+
+fn summarize(values: &[f32]) -> MetricSummary {
+    if values.is_empty() {
+        return MetricSummary::default();
+    }
+    let mean = values.iter().sum::<f32>() / values.len() as f32;
+    let min = values.iter().cloned().fold(f32::INFINITY, f32::min);
+    let max = values.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let var = values
+        .iter()
+        .map(|v| {
+            let d = *v - mean;
+            d * d
+        })
+        .sum::<f32>()
+        / values.len() as f32;
+    MetricSummary {
+        mean,
+        min,
+        max,
+        stdev: var.sqrt(),
+    }
+}
+
+fn summarize_usize(values: &[usize]) -> MetricSummary {
+    summarize(&values.iter().map(|v| *v as f32).collect::<Vec<_>>())
+}
+
+fn primary_generator_label(sources: &[crate::taste::retrieve::RetrievalSource]) -> &'static str {
+    use crate::taste::retrieve::RetrievalKind;
+    let families: HashSet<_> = sources
+        .iter()
+        .map(|s| s.kind.generator_family())
+        .collect();
+    if families.len() > 1 {
+        return "multiple";
+    }
+    match sources.first().map(|s| s.kind) {
+        Some(kind) if kind.is_related() => "related",
+        Some(RetrievalKind::Filmography) => "filmography",
+        Some(RetrievalKind::Collection) => "collection",
+        Some(RetrievalKind::SemanticFilmLocal) => "semanticFilmLocal",
+        Some(RetrievalKind::SemanticProfile) => "semanticProfile",
+        Some(_) => "other",
+        None => "other",
+    }
+}
+
+/// Score recovery of held-out loved/liked films that entered the candidate pool.
+pub fn source_coverage_for_hits(
+    candidates: &[crate::taste::retrieve::Candidate],
+    held_out_positives: &HashSet<String>,
+) -> SourceCoverage {
+    let mut related = 0usize;
+    let mut filmography = 0usize;
+    let mut collection = 0usize;
+    let mut semantic_film_local = 0usize;
+    let mut semantic_profile = 0usize;
+    let mut multiple = 0usize;
+    let mut other = 0usize;
+    let mut recovered = 0usize;
+    for c in candidates {
+        let key = identity_key(c.tmdb_id, &c.title, c.year);
+        if !held_out_positives.contains(&key) {
+            continue;
+        }
+        recovered += 1;
+        match primary_generator_label(&c.sources) {
+            "related" => related += 1,
+            "filmography" => filmography += 1,
+            "collection" => collection += 1,
+            "semanticFilmLocal" => semantic_film_local += 1,
+            "semanticProfile" => semantic_profile += 1,
+            "multiple" => multiple += 1,
+            _ => other += 1,
+        }
+    }
+    let denom = recovered.max(1) as f32;
+    SourceCoverage {
+        related: related as f32 / denom,
+        filmography: filmography as f32 / denom,
+        collection: collection as f32 / denom,
+        semantic_film_local: semantic_film_local as f32 / denom,
+        semantic_profile: semantic_profile as f32 / denom,
+        studio: 0.0,
+        multiple: multiple as f32 / denom,
+        other: other as f32 / denom,
+        recovered,
+    }
+}
+
+pub fn evaluate_retrieval_fold(
+    seed: u64,
+    inputs: &ReplayInputs,
+    all_films: &[FilmRecord],
+    candidates: &[crate::taste::retrieve::Candidate],
+) -> RetrievalFoldMetrics {
+    let held_out_positives: HashSet<String> = all_films
+        .iter()
+        .filter(|f| {
+            let key = identity_key(f.tmdb_id, &f.title, f.year);
+            inputs.held_out.contains(&key)
+                && f.rating
+                    .map(|r| matches!(rating_bucket(r), RatingBucket::Loved | RatingBucket::Liked))
+                    .unwrap_or(false)
+        })
+        .map(|f| identity_key(f.tmdb_id, &f.title, f.year))
+        .collect();
+    let retrieved_ids: Vec<String> = candidates
+        .iter()
+        .map(|c| identity_key(c.tmdb_id, &c.title, c.year))
+        .collect();
+    RetrievalFoldMetrics {
+        seed,
+        held_out_positives: held_out_positives.len(),
+        held_out_total: inputs.held_out.len(),
+        candidate_pool_size: candidates.len(),
+        retrieval_recall_at_100: recall_at(&retrieved_ids, &held_out_positives, 100),
+        retrieval_recall_at_250: recall_at(&retrieved_ids, &held_out_positives, 250),
+        retrieval_recall_at_1000: recall_at(&retrieved_ids, &held_out_positives, 1000),
+        source_coverage: source_coverage_for_hits(candidates, &held_out_positives),
+    }
+}
+
+/// Run the Milestone A retrieval benchmark: stratified repeated holdouts against
+/// the live retrieval pipeline. Does not rewrite scoring.
+pub fn run_retrieval_benchmark(
+    db: &Database,
+    films: &[FilmRecord],
+    seeds: &[u64],
+    holdout_frac: f32,
+) -> Result<RetrievalBenchmarkReport, String> {
+    let mut fold_metrics = Vec::new();
+    for &seed in seeds {
+        let inputs = stratified_holdout_inputs(films, seed, holdout_frac);
+        if inputs.held_out.is_empty() {
+            continue;
+        }
+        let retrieved = crate::taste::retrieve::retrieve_with_coverage(
+            db,
+            &inputs.training_films,
+            &inputs.profile,
+            &inputs.seen,
+            false,
+        )?;
+        fold_metrics.push(evaluate_retrieval_fold(
+            seed,
+            &inputs,
+            films,
+            &retrieved.candidates,
+        ));
+    }
+    let recall_100: Vec<f32> = fold_metrics
+        .iter()
+        .map(|f| f.retrieval_recall_at_100)
+        .collect();
+    let recall_250: Vec<f32> = fold_metrics
+        .iter()
+        .map(|f| f.retrieval_recall_at_250)
+        .collect();
+    let recall_1000: Vec<f32> = fold_metrics
+        .iter()
+        .map(|f| f.retrieval_recall_at_1000)
+        .collect();
+    let pools: Vec<usize> = fold_metrics.iter().map(|f| f.candidate_pool_size).collect();
+    let recovered: usize = fold_metrics.iter().map(|f| f.source_coverage.recovered).sum();
+    let mean_source = if recovered == 0 {
+        SourceCoverage::default()
+    } else {
+        let weight = |pick: fn(&SourceCoverage) -> f32| -> f32 {
+            fold_metrics
+                .iter()
+                .map(|f| pick(&f.source_coverage) * f.source_coverage.recovered as f32)
+                .sum::<f32>()
+                / recovered as f32
+        };
+        SourceCoverage {
+            related: weight(|s| s.related),
+            filmography: weight(|s| s.filmography),
+            collection: weight(|s| s.collection),
+            semantic_film_local: weight(|s| s.semantic_film_local),
+            semantic_profile: weight(|s| s.semantic_profile),
+            studio: 0.0,
+            multiple: weight(|s| s.multiple),
+            other: weight(|s| s.other),
+            recovered,
+        }
+    };
+    Ok(RetrievalBenchmarkReport {
+        protocol: "stratified-repeated-holdout-v1".into(),
+        algorithm_version: crate::taste::workspace::ALGORITHM_VERSION.into(),
+        rated_films: films.iter().filter(|f| f.rating.is_some()).count(),
+        folds: fold_metrics.len(),
+        holdout_frac,
+        seeds: seeds.to_vec(),
+        fold_metrics,
+        recall_at_100: summarize(&recall_100),
+        recall_at_250: summarize(&recall_250),
+        recall_at_1000: summarize(&recall_1000),
+        candidate_pool_size: summarize_usize(&pools),
+        mean_source_coverage: mean_source,
+    })
+}
+
+/// Write a reproducible benchmark JSON artifact under `taste-runs/benchmarks/`.
+pub fn write_benchmark_artifact(
+    taste_runs_dir: &std::path::Path,
+    report: &RetrievalBenchmarkReport,
+) -> Result<String, String> {
+    let dir = taste_runs_dir.join("benchmarks");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let path = dir.join(format!("retrieval-{stamp}.json"));
+    let latest = dir.join("retrieval-latest.json");
+    let body = serde_json::to_string_pretty(report).map_err(|e| e.to_string())?;
+    std::fs::write(&path, &body).map_err(|e| e.to_string())?;
+    let _ = std::fs::write(&latest, &body);
+    Ok(path.display().to_string())
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -389,6 +887,69 @@ pub fn resume_only_share(rows: &[ScoredCandidate]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::taste::explain::{EligibilityTrace, EvidenceGrade};
+    use crate::taste::retrieve::{MediaKind, RetrievalKind, RetrievalSource};
+    use crate::taste::score::{CandidateScore, CandidateView};
+
+    fn board_candidate(
+        id: i64,
+        title: &str,
+        total: f32,
+        grade: EvidenceGrade,
+        seed_rating: Option<f32>,
+        negative_features: Vec<String>,
+    ) -> ScoredCandidate {
+        ScoredCandidate {
+            candidate: CandidateView {
+                tmdb_id: Some(id),
+                title: title.into(),
+                year: Some(2024),
+                poster: None,
+                watchlist: false,
+                sources: vec![RetrievalSource {
+                    kind: RetrievalKind::RelatedRecommendations,
+                    label: "test seed".into(),
+                    seed_tmdb_id: Some(100 + id),
+                    seed_rating,
+                    similarity: None,
+                    neighbor_rank: None,
+                }],
+                directors: vec![],
+                genres: vec![],
+                modes: vec![],
+                media_kind: MediaKind::Movie,
+                runtime: Some(100),
+                vote_count: Some(1000),
+                semantic_cluster: None,
+            },
+            score: CandidateScore {
+                content: 0.0,
+                tmdb_related: 0.0,
+                friend_affinity: 0.0,
+                recent_taste: 0.0,
+                watchlist: 0.0,
+                novelty: 0.0,
+                negative_evidence: 0.0,
+                semantic_fit: 0.5,
+                semantic_coverage: false,
+                total,
+            },
+            reasons: vec![],
+            evidence: vec![],
+            positive_features: vec![],
+            negative_features,
+            contextual_only: false,
+            person_keys: vec![],
+            display_reasons: vec![],
+            scoring_reasons: vec![],
+            matched_features: vec![],
+            hidden_features: vec![],
+            eligibility: EligibilityTrace {
+                evidence_grade: grade,
+                ..Default::default()
+            },
+        }
+    }
 
     #[test]
     fn retrieval_vs_scoring_layers() {
@@ -414,6 +975,50 @@ mod tests {
         assert_eq!(source_mix(&[]).filmography_only, 0);
         assert_eq!(resume_only_share(&[]), 0.0);
         assert!(!ids_of(&[]).is_empty() || true);
+    }
+
+    #[test]
+    fn displayed_board_counts_pressure_probes_and_strong_fit_share() {
+        let picks = vec![
+            board_candidate(1, "Strong Evidence", 0.05, EvidenceGrade::Strong, None, vec![]),
+            board_candidate(2, "Strong Total", 0.20, EvidenceGrade::Medium, None, vec![]),
+            board_candidate(
+                3,
+                "Weak Probe",
+                0.05,
+                EvidenceGrade::Medium,
+                None,
+                vec!["negative match".into()],
+            ),
+            board_candidate(
+                4,
+                "Disliked Neighbor",
+                0.20,
+                EvidenceGrade::Strong,
+                Some(2.0),
+                vec![],
+            ),
+        ];
+
+        let metrics = evaluate_displayed_board(&picks, &[], &["weak probe"]);
+
+        assert_eq!(metrics.board_count, 4);
+        assert_eq!(metrics.disliked_in_top_20, 2);
+        assert_eq!(metrics.probe_weak_in_top_20, 1);
+        assert!((metrics.strong_fit_share - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn holdout_retrieval_wraps_layered_metrics() {
+        let retrieved = vec!["tmdb:1".into(), "tmdb:2".into(), "tmdb:3".into()];
+        let scored = vec!["tmdb:2".into(), "tmdb:8".into()];
+        let held_out = HashSet::from(["tmdb:2".into()]);
+
+        let metrics = evaluate_holdout_retrieval(&retrieved, &scored, &held_out);
+
+        assert_eq!(metrics.holdout_hit_rate_at_50, 1.0);
+        assert_eq!(metrics.holdout_ndcg_at_12, 1.0);
+        assert_eq!(metrics.board_count, 2);
     }
 
     #[test]
@@ -454,6 +1059,8 @@ mod tests {
             keywords: vec![],
             recommendations: vec![],
             similar: vec![],
+            collection_name: None,
+            collection: vec![],
             runtime: Some(100),
             poster: None,
             vote_count: Some(1000),
@@ -496,6 +1103,862 @@ mod tests {
             .all(|e| e.tmdb_id != Some(3)));
     }
 
+    #[test]
+    fn stratified_holdout_is_deterministic_and_leaks_no_held_out_into_profile() {
+        use crate::taste::retrieve::attach_signals;
+        let mut films = Vec::new();
+        for i in 0..40 {
+            let rating = match i % 4 {
+                0 => 5.0,
+                1 => 4.0,
+                2 => 3.0,
+                _ => 1.5,
+            };
+            let year = 1990 + (i % 30);
+            let mut f = film(
+                &format!("Film {i}"),
+                i as i64 + 1,
+                rating,
+                year,
+                &["Drama"],
+                vec![],
+                1.0,
+            );
+            f.vote_count = Some(if i % 3 == 0 { 8000 } else { 200 });
+            films.push(f);
+        }
+        attach_signals(&mut films);
+        let a = stratified_holdout_inputs(&films, 42, 0.15);
+        let b = stratified_holdout_inputs(&films, 42, 0.15);
+        assert_eq!(a.held_out, b.held_out);
+        assert!(!a.held_out.is_empty());
+        for key in &a.held_out {
+            assert!(!a.seen.contains(key));
+            assert!(a
+                .training_films
+                .iter()
+                .all(|f| &identity_key(f.tmdb_id, &f.title, f.year) != key));
+        }
+        let c = stratified_holdout_inputs(&films, 77, 0.15);
+        assert_ne!(a.held_out, c.held_out);
+    }
+
+    #[test]
+    fn source_coverage_separates_related_from_multiple_generators() {
+        use crate::taste::retrieve::{Candidate, MediaKind, RetrievalKind, RetrievalSource};
+        let related = Candidate {
+            tmdb_id: Some(10),
+            title: "Hit Related".into(),
+            year: Some(2000),
+            poster: None,
+            genres: vec![],
+            credits: vec![],
+            keywords: vec![],
+            runtime: None,
+            vote_count: None,
+            watchlist: false,
+            sources: vec![
+                RetrievalSource::new(RetrievalKind::RelatedRecommendations, "from A", Some(1)),
+                RetrievalSource::new(RetrievalKind::RelatedRecommendations, "from B", Some(2)),
+            ],
+            friend_affinity: 0.0,
+            tmdb_related: 1.0,
+            media_kind: MediaKind::Movie,
+        };
+        let multi = Candidate {
+            tmdb_id: Some(11),
+            title: "Hit Multi".into(),
+            year: Some(2001),
+            sources: vec![
+                RetrievalSource::new(RetrievalKind::RelatedRecommendations, "from A", Some(1)),
+                RetrievalSource::new(RetrievalKind::Filmography, "Actor", None),
+            ],
+            ..related.clone()
+        };
+        let held = HashSet::from(["tmdb:10".into(), "tmdb:11".into()]);
+        let cov = source_coverage_for_hits(&[related, multi], &held);
+        assert_eq!(cov.recovered, 2);
+        assert!((cov.related - 0.5).abs() < 1e-5);
+        assert!((cov.multiple - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn evaluate_retrieval_fold_reports_pool_size_with_recall() {
+        use crate::taste::retrieve::{Candidate, MediaKind, RetrievalKind, RetrievalSource};
+        let mut films = vec![
+            film("Loved", 1, 5.0, 2010, &["Drama"], vec![], 1.0),
+            film("Hidden Love", 99, 5.0, 2011, &["Drama"], vec![], 1.0),
+            film("Hidden Meh", 98, 3.0, 2012, &["Drama"], vec![], 1.0),
+        ];
+        crate::taste::retrieve::attach_signals(&mut films);
+        let inputs = ReplayInputs {
+            training_films: films[..1].to_vec(),
+            profile: crate::taste::feature_profile_from_films(&films[..1]),
+            held_out: HashSet::from(["tmdb:99".into(), "tmdb:98".into()]),
+            seen: seen_keys(&films[..1]),
+        };
+        let candidates = vec![Candidate {
+            tmdb_id: Some(99),
+            title: "Hidden Love".into(),
+            year: Some(2011),
+            poster: None,
+            genres: vec![],
+            credits: vec![],
+            keywords: vec![],
+            runtime: None,
+            vote_count: None,
+            watchlist: false,
+            sources: vec![RetrievalSource::new(
+                RetrievalKind::Collection,
+                "same collection",
+                Some(1),
+            )],
+            friend_affinity: 0.0,
+            tmdb_related: 0.0,
+            media_kind: MediaKind::Movie,
+        }];
+        let metrics = evaluate_retrieval_fold(17, &inputs, &films, &candidates);
+        assert_eq!(metrics.held_out_positives, 1);
+        assert_eq!(metrics.candidate_pool_size, 1);
+        assert!((metrics.retrieval_recall_at_100 - 1.0).abs() < 1e-5);
+        assert!((metrics.source_coverage.collection - 1.0).abs() < 1e-5);
+    }
+
+    /// Live B1.1 Craft calibration: role ablations + λ sweep.
+    /// `STUDIO_DB=... cargo test write_live_craft_calibration -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB pointing at a real studio.db"]
+    fn write_live_craft_calibration() {
+        use crate::storage::db::Database;
+        use crate::taste::craft_calibration::{
+            run_craft_calibration, write_craft_calibration_artifact,
+        };
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let report =
+            run_craft_calibration(&db, &films, &BENCHMARK_SEEDS, BENCHMARK_HOLDOUT_FRAC)
+                .expect("craft calibration");
+        let written =
+            write_craft_calibration_artifact(std::path::Path::new(&out), &report).expect("write");
+        eprintln!("=== Craft calibration (Δ vs Content-only) ===");
+        for m in &report.mean_ablations {
+            eprintln!(
+                "{:<20} loved>dis={:.3} (Δ{:+.3})  lovedRank≈{:.0} (Δ{:+.0})  disRank≈{:.0} (Δ{:+.0})  ndcg@250={:.3} (Δ{:+.3})  rescue={:.1} damage={:.1}{}",
+                m.name,
+                m.loved_vs_disliked.mean,
+                m.delta_loved_vs_disliked.mean,
+                m.mean_rank_loved.mean,
+                m.delta_mean_rank_loved.mean,
+                m.mean_rank_disliked.mean,
+                m.delta_mean_rank_disliked.mean,
+                m.ndcg_at_250.mean,
+                m.delta_ndcg_at_250.mean,
+                m.rescued_positives.mean,
+                m.damaged_positives.mean,
+                m.note.as_deref().map(|n| format!("  [{n}]")).unwrap_or_default(),
+            );
+        }
+        eprintln!("gate: {}", report.gate);
+        eprintln!("wrote {written}");
+    }
+
+    /// Live B2 Form calibration: independent runtime/era/language vs Content-only.
+    /// `STUDIO_DB=... cargo test write_live_form_calibration -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB pointing at a real studio.db"]
+    fn write_live_form_calibration() {
+        use crate::storage::db::Database;
+        use crate::taste::form_calibration::{
+            run_form_calibration, write_form_calibration_artifact,
+        };
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let report =
+            run_form_calibration(&db, &films, &BENCHMARK_SEEDS, BENCHMARK_HOLDOUT_FRAC)
+                .expect("form calibration");
+        let written =
+            write_form_calibration_artifact(std::path::Path::new(&out), &report).expect("write");
+        eprintln!("=== Form calibration (Δ vs Content-only) ===");
+        for m in &report.mean_ablations {
+            eprintln!(
+                "{:<12} gate={:<16} loved>dis Δ{:+.3}  lovedRank Δ{:+.0}  disRank Δ{:+.0}  ndcg@250 Δ{:+.3}  posGain={:.0} posLoss={:.0} negGain={:.0} |Δ|p90={:.0}{}",
+                m.name,
+                m.gate,
+                m.delta_loved_vs_disliked.mean,
+                m.delta_mean_rank_loved.mean,
+                m.delta_mean_rank_disliked.mean,
+                m.delta_ndcg_at_250.mean,
+                m.positive_rank_gain.mean,
+                m.positive_rank_loss.mean,
+                m.negative_rank_gain.mean,
+                m.p90_abs_delta.mean,
+                m.note.as_deref().map(|n| format!("  [{n}]")).unwrap_or_default(),
+            );
+        }
+        eprintln!("gate: {}", report.gate);
+        eprintln!("wrote {written}");
+    }
+
+    /// Live B3 Continuity calibration: collection polarity vs Content-only.
+    /// `STUDIO_DB=... cargo test write_live_continuity_calibration -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB pointing at a real studio.db"]
+    fn write_live_continuity_calibration() {
+        use crate::storage::db::Database;
+        use crate::taste::continuity_calibration::{
+            run_continuity_calibration, write_continuity_calibration_artifact,
+        };
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let report =
+            run_continuity_calibration(&db, &films, &BENCHMARK_SEEDS, BENCHMARK_HOLDOUT_FRAC)
+                .expect("continuity calibration");
+        let written = write_continuity_calibration_artifact(std::path::Path::new(&out), &report)
+            .expect("write");
+        eprintln!("=== Continuity calibration (Δ vs Content-only) ===");
+        for m in &report.mean_ablations {
+            eprintln!(
+                "{:<20} gate={:<16} loved>dis Δ{:+.3}  lovedRank Δ{:+.0}  disRank Δ{:+.0}  ndcg@250 Δ{:+.3}  posGain={:.0} posLoss={:.0} collPos≈{:.1} collDis≈{:.1}{}",
+                m.name,
+                m.gate,
+                m.delta_loved_vs_disliked.mean,
+                m.delta_mean_rank_loved.mean,
+                m.delta_mean_rank_disliked.mean,
+                m.delta_ndcg_at_250.mean,
+                m.positive_rank_gain.mean,
+                m.positive_rank_loss.mean,
+                m.collection_supported_positives.mean,
+                m.collection_supported_dislikes.mean,
+                m.note.as_deref().map(|n| format!("  [{n}]")).unwrap_or_default(),
+            );
+        }
+        eprintln!("gate: {}", report.gate);
+        eprintln!("wrote {written}");
+    }
+
+    /// Live B4 Quality calibration: positive/negative TMDB prior vs Content-only.
+    /// `STUDIO_DB=... cargo test write_live_quality_calibration -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB pointing at a real studio.db"]
+    fn write_live_quality_calibration() {
+        use crate::storage::db::Database;
+        use crate::taste::quality_calibration::{
+            run_quality_calibration, write_quality_calibration_artifact,
+        };
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let report =
+            run_quality_calibration(&db, &films, &BENCHMARK_SEEDS, BENCHMARK_HOLDOUT_FRAC)
+                .expect("quality calibration");
+        let written =
+            write_quality_calibration_artifact(std::path::Path::new(&out), &report).expect("write");
+        eprintln!("=== Quality calibration (Δ vs Content-only) ===");
+        for m in &report.mean_ablations {
+            eprintln!(
+                "{:<18} gate={:<16} loved>dis Δ{:+.3}  lovedRank Δ{:+.0}  disRank Δ{:+.0}  ndcg@250 Δ{:+.3}  posGain={:.0} posLoss={:.0} |Δ|p90={:.0}{}",
+                m.name,
+                m.gate,
+                m.delta_loved_vs_disliked.mean,
+                m.delta_mean_rank_loved.mean,
+                m.delta_mean_rank_disliked.mean,
+                m.delta_ndcg_at_250.mean,
+                m.positive_rank_gain.mean,
+                m.positive_rank_loss.mean,
+                m.p90_abs_delta.mean,
+                m.note.as_deref().map(|n| format!("  [{n}]")).unwrap_or_default(),
+            );
+        }
+        eprintln!("gate: {}", report.gate);
+        eprintln!("wrote {written}");
+    }
+
+    /// Live C1 eligibility + Match calibration.
+    /// `STUDIO_DB=... cargo test write_live_eligibility_calibration -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB pointing at a real studio.db"]
+    fn write_live_eligibility_calibration() {
+        use crate::storage::db::Database;
+        use crate::taste::eligibility_calibration::{
+            run_eligibility_calibration, write_eligibility_calibration_artifact,
+        };
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let report =
+            run_eligibility_calibration(&db, &films, &BENCHMARK_SEEDS, BENCHMARK_HOLDOUT_FRAC)
+                .expect("eligibility calibration");
+        let written = write_eligibility_calibration_artifact(std::path::Path::new(&out), &report)
+            .expect("write");
+        eprintln!("=== Eligibility + Match calibration (C1–C4) ===");
+        eprintln!(
+            "eligible_count mean={:.1} min={:.0}  loved_elig={:.2} liked_elig={:.2} dis_elig={:.2}",
+            report.mean_eligible_count.mean,
+            report.mean_eligible_count.min,
+            report.mean_loved_eligible_pct.mean,
+            report.mean_liked_eligible_pct.mean,
+            report.mean_disliked_eligible_pct.mean,
+        );
+        eprintln!(
+            "precision={:.2} recall_pos={:.2} rec_share={:.2} high_fit_held={:.2} board12 pos={:.2} dis={:.2}",
+            report.mean_precision_eligible.mean,
+            report.mean_recall_eligible_positives.mean,
+            report.mean_recommended_share.mean,
+            report.mean_high_fit_held_pct.mean,
+            report.mean_board12_loved_liked_share.mean,
+            report.mean_board12_disliked_share.mean,
+        );
+        eprintln!(
+            "match curve support={} display {}–{}",
+            report.match_calibration.support,
+            report.match_calibration.display_min,
+            report.match_calibration.display_max,
+        );
+        eprintln!("gate: {}", report.gate);
+        eprintln!("wrote {written}");
+    }
+
+    /// Live D1 board diversification calibration.
+    /// `STUDIO_DB=... cargo test write_live_diversify_calibration -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB pointing at a real studio.db"]
+    fn write_live_diversify_calibration() {
+        use crate::storage::db::Database;
+        use crate::taste::diversify_calibration::{
+            run_diversify_calibration, write_diversify_calibration_artifact,
+        };
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let report =
+            run_diversify_calibration(&db, &films, &BENCHMARK_SEEDS, BENCHMARK_HOLDOUT_FRAC)
+                .expect("diversify d1");
+        let written =
+            write_diversify_calibration_artifact(std::path::Path::new(&out), &report).expect("write");
+        for mode in &report.mean_variants {
+            if let Some(b12) = mode.boards.iter().find(|b| b.size == 12) {
+                eprintln!(
+                    "mode={:<16} @12 pos={:.3} dis={:.3} ndcg={:.3} fit_loss={:.5} reorder={:.1} max_jump={:.1} col_dup={:.2} gate={}",
+                    mode.name,
+                    b12.positive_share.mean,
+                    b12.disliked_share.mean,
+                    b12.ndcg.mean,
+                    b12.mean_fit_loss.mean,
+                    b12.reordered_slots.mean,
+                    b12.max_rank_jump.mean,
+                    b12.collection_dup_extras.mean,
+                    mode.gate,
+                );
+            }
+        }
+        eprintln!("gate: {}", report.gate);
+        eprintln!("wrote {written}");
+    }
+
+    /// Final v1 freeze regression: production policy + live board inventory/lanes.
+    /// `STUDIO_DB=... cargo test write_live_v1_freeze_regression -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB with ratings + embeddings"]
+    fn write_live_v1_freeze_regression() {
+        use crate::storage::db::Database;
+        use crate::taste::board_validation::{
+            print_board_for_judgment, run_live_board_validation, write_live_board_artifact,
+        };
+        use crate::taste::diversify::DiversifyConfig;
+        use crate::taste::retrieve::{attach_signals, load_films};
+        use crate::taste::v1_policy::{assert_v1_production_policy, V1_POLICY_ID};
+        use crate::taste::workspace::{self, FEATURED_MAX, NEW_MAX};
+        crate::taste::v1_policy::assert_v1_production_policy();
+        assert!(
+            !DiversifyConfig::light().recommendation_value,
+            "production F2 must stay off"
+        );
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let report = run_live_board_validation(&db, &films).expect("live board");
+        assert_eq!(report.algorithm_version, V1_POLICY_ID);
+        assert!(
+            report.final_board.len() <= FEATURED_MAX,
+            "Featured display cap {}",
+            report.final_board.len()
+        );
+        // Full assemble inventory path.
+        let profile = crate::taste::feature_profile_from_films(&films);
+        let seen = crate::taste::retrieve::seen_keys(&films);
+        let pool =
+            crate::taste::retrieve::build_retrieval_pool(&db, &films, &profile, &seen, false)
+                .expect("pool");
+        let examined = crate::taste::retrieve::select_fair_pool(pool.by_key, 1_000);
+        let semantic_map =
+            crate::taste::semantic::score_candidates_from_cache(&db, &films, &examined);
+        let mut scored =
+            crate::taste::score::score_pool_with_semantic(&profile, &examined, &semantic_map);
+        crate::taste::semantic::attach_semantic_clusters_from_db(&db, &mut scored.ranked);
+        let ws = workspace::assemble(&scored.ranked);
+        assert!(
+            ws.new_picks.len() <= NEW_MAX && !ws.new_picks.is_empty(),
+            "New inventory {} (cap {})",
+            ws.new_picks.len(),
+            NEW_MAX
+        );
+        assert!(
+            ws.new_picks.iter().all(|c| !c.candidate.watchlist),
+            "Watchlist must not occupy New"
+        );
+        assert!(
+            ws.watchlist_picks.iter().all(|c| c.candidate.watchlist),
+            "Watchlist lane must be watchlist-only"
+        );
+        let written =
+            write_live_board_artifact(std::path::Path::new(&out), &report).expect("write");
+        print_board_for_judgment(&report);
+        eprintln!("freeze={} inventory={} featured={}", V1_POLICY_ID, ws.new_picks.len(), report.final_board.len());
+        eprintln!("F2_off={} hybrid_prod=off", !DiversifyConfig::light().recommendation_value);
+        eprintln!("wrote {written}");
+        let _ = assert_v1_production_policy;
+    }
+
+    /// Live v1 board: full-profile New board under active-2k (no algo changes).
+    /// `STUDIO_DB=... cargo test write_live_board_v1 -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB with ratings + embeddings"]
+    fn write_live_board_v1() {
+        use crate::storage::db::Database;
+        use crate::taste::board_validation::{
+            print_board_for_judgment, run_live_board_validation, write_live_board_artifact,
+        };
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let report = run_live_board_validation(&db, &films).expect("live board");
+        let written =
+            write_live_board_artifact(std::path::Path::new(&out), &report).expect("write");
+        print_board_for_judgment(&report);
+        eprintln!("algo={}", report.algorithm_version);
+        eprintln!("wrote {written}");
+    }
+
+    /// Live E1: expand semantic universe then run recall curve.
+    /// `STUDIO_DB=... cargo test write_live_universe_calibration -- --ignored --nocapture`
+    /// Optional: `STUDIO_UNIVERSE_TARGET=10000` (default 10000). Set `STUDIO_UNIVERSE_SKIP_EXPAND=1` to bench only.
+    #[test]
+    #[ignore = "requires STUDIO_DB + TMDB + OpenRouter keys; network + embed cost"]
+    fn write_live_universe_calibration() {
+        use crate::storage::db::Database;
+        use crate::taste::retrieve::{attach_signals, load_films};
+        use crate::taste::semantic_universe::{
+            ensure_semantic_universe, DEFAULT_UNIVERSE_TARGET,
+        };
+        use crate::taste::universe_calibration::{
+            run_universe_calibration, write_universe_calibration_artifact,
+        };
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let target: usize = std::env::var("STUDIO_UNIVERSE_TARGET")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_UNIVERSE_TARGET);
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        if std::env::var_os("STUDIO_UNIVERSE_SKIP_EXPAND").is_none() {
+            let key = crate::taste::get_api_key()
+                .expect("openrouter key lookup")
+                .expect("OpenRouter key required to embed universe");
+            let expand = ensure_semantic_universe(&db, &key, target).expect("expand");
+            eprintln!(
+                "expand: harvested={} embedded={} catalog {}→{} emb {}→{} bytes≈{} errs={}",
+                expand.harvested,
+                expand.embedded,
+                expand.catalog_before,
+                expand.catalog_after,
+                expand.embeddings_before,
+                expand.embeddings_after,
+                expand.index_bytes_est,
+                expand.errors.len()
+            );
+            for e in expand.errors.iter().take(5) {
+                eprintln!("  err: {e}");
+            }
+        }
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        // Curve uses 3 seeds by default for wall-clock; set STUDIO_UNIVERSE_FULL_SEEDS=1 for all 5.
+        let seeds: &[u64] = if std::env::var_os("STUDIO_UNIVERSE_FULL_SEEDS").is_some() {
+            &BENCHMARK_SEEDS
+        } else {
+            &BENCHMARK_SEEDS[..3]
+        };
+        let report =
+            run_universe_calibration(&db, &films, seeds, BENCHMARK_HOLDOUT_FRAC)
+                .expect("universe e1");
+        let written =
+            write_universe_calibration_artifact(std::path::Path::new(&out), &report).expect("write");
+        for p in &report.curve {
+            eprintln!(
+                "cap={:<6} eff={:<6} oracle={:.3} @100={:.3} @250={:.3} @1000={:.3} pool={:.0} localΔ={:.3} profileΔ={:.3} nogen={:.3} semOnly={:.3} ms={:.0}",
+                p.index_cap,
+                p.index_effective,
+                p.oracle_recall.mean,
+                p.recall_at_100.mean,
+                p.recall_at_250.mean,
+                p.recall_at_1000.mean,
+                p.pool_size.mean,
+                p.semantic_local_delta.mean,
+                p.semantic_profile_delta.mean,
+                p.no_generator_capable.mean,
+                p.semantic_only_share.mean,
+                p.retrieval_ms.mean,
+            );
+        }
+        eprintln!("chosen_cap={}", report.chosen_index_cap);
+        eprintln!("gate: {}", report.gate);
+        eprintln!("wrote {written}");
+    }
+
+    /// Live A/B: active-2k D1.1 vs D1.1+F2 Featured-12 (hybrid150 off).
+    /// `STUDIO_DB=... cargo test write_live_ab_f2 -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB with ratings + embeddings"]
+    fn write_live_ab_f2() {
+        use crate::storage::db::Database;
+        use crate::taste::f2_board_ab::{
+            print_f2_ab_for_judgment, run_f2_ab_comparison, write_f2_ab_artifact,
+        };
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let report = run_f2_ab_comparison(&db, &films).expect("ab f2");
+        let written = write_f2_ab_artifact(std::path::Path::new(&out), &report).expect("write");
+        print_f2_ab_for_judgment(&report);
+        eprintln!("algo={}", report.algorithm_version);
+        eprintln!("wrote {written}");
+    }
+
+    /// Live A/B: active-2k control vs hybrid150 (experiment; not production default).
+    /// `STUDIO_DB=... cargo test write_live_ab_hybrid150 -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB with ratings + ~10k embeddings"]
+    fn write_live_ab_hybrid150() {
+        use crate::storage::db::Database;
+        use crate::taste::hybrid_board_ab::{
+            print_ab_for_judgment, run_ab_hybrid150_comparison, write_ab_artifact,
+        };
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let report = run_ab_hybrid150_comparison(&db, &films).expect("ab hybrid150");
+        let written = write_ab_artifact(std::path::Path::new(&out), &report).expect("write");
+        print_ab_for_judgment(&report);
+        eprintln!("algo={}", report.algorithm_version);
+        eprintln!("wrote {written}");
+    }
+
+    /// Live F1: hybrid 2k-core + protected 10k discovery examination matrix.
+    /// `STUDIO_DB=... cargo test write_live_hybrid_calibration -- --ignored --nocapture`
+    /// Optional: `STUDIO_HYBRID_FULL_SEEDS=1` for all 5 benchmark seeds (default 3).
+    #[test]
+    #[ignore = "requires STUDIO_DB with ratings + ~10k embeddings"]
+    fn write_live_hybrid_calibration() {
+        use crate::storage::db::Database;
+        use crate::taste::hybrid_calibration::{
+            print_hybrid_report, run_hybrid_calibration, write_hybrid_calibration_artifact,
+        };
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let seeds: &[u64] = if std::env::var_os("STUDIO_HYBRID_FULL_SEEDS").is_some() {
+            &BENCHMARK_SEEDS
+        } else {
+            &BENCHMARK_SEEDS[..3]
+        };
+        let report =
+            run_hybrid_calibration(&db, &films, seeds, BENCHMARK_HOLDOUT_FRAC).expect("hybrid");
+        let written =
+            write_hybrid_calibration_artifact(std::path::Path::new(&out), &report).expect("write");
+        print_hybrid_report(&report);
+        eprintln!("algo={}", report.algorithm_version);
+        eprintln!("wrote {written}");
+    }
+
+    /// Live E1.1: exam-pressure allocation matrix (2k vs 10k × modes).
+    /// `STUDIO_DB=... cargo test write_live_exam_pressure_calibration -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB with 10k semantic index"]
+    fn write_live_exam_pressure_calibration() {
+        use crate::storage::db::Database;
+        use crate::taste::exam_calibration::{
+            run_exam_calibration, write_exam_calibration_artifact,
+        };
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let seeds: &[u64] = if std::env::var_os("STUDIO_EXAM_FULL_SEEDS").is_some() {
+            &BENCHMARK_SEEDS
+        } else {
+            &BENCHMARK_SEEDS[..3]
+        };
+        // Clear progress log for a clean run.
+        let progress = std::path::Path::new(&out)
+            .join("benchmarks")
+            .join("exam-pressure-progress.txt");
+        let _ = std::fs::remove_file(&progress);
+
+        let report =
+            run_exam_calibration(&db, &films, seeds, BENCHMARK_HOLDOUT_FRAC).expect("exam e1.1");
+        let written =
+            write_exam_calibration_artifact(std::path::Path::new(&out), &report).expect("write");
+        for p in &report.matrix {
+            eprintln!(
+                "mode={:<18} idx={:<6} exam={:<5} oracle={:.3} @100={:.3} @250={:.3} @exam={:.3} capFail={:.3} semOnly={:.3} flShare={:.3} prShare={:.3} ms={:.0}",
+                p.mode,
+                p.index_cap,
+                p.exam_cap,
+                p.oracle_recall.mean,
+                p.recall_at_100.mean,
+                p.recall_at_250.mean,
+                p.recall_at_1000.mean,
+                p.candidate_cap_failures.mean,
+                p.semantic_only_recovery.mean,
+                p.film_local_share.mean,
+                p.profile_share.mean,
+                p.retrieval_ms.mean,
+            );
+        }
+        eprintln!("control_2k @1000={:.3} oracle={:.3}", report.control_2k_at_1000, report.control_2k_oracle);
+        eprintln!(
+            "active_retrieval_cap={} chosen_mode={} index={}",
+            report.active_retrieval_cap, report.chosen_mode, report.chosen_index_cap
+        );
+        eprintln!("gate: {}", report.gate);
+        eprintln!("wrote {written}");
+        for p in report.matrix.iter().filter(|p| {
+            p.mode == "current" && p.index_cap >= 8_000 && p.exam_cap == 1_000
+        }) {
+            eprintln!("cap-miss samples (current@10k, n={}):", p.sample_cap_misses.len());
+            for s in p.sample_cap_misses.iter().take(8) {
+                eprintln!(
+                    "  {} gens={:?} native={:?} examRank={:?} famAhead={} dupHood={} fl={} pr={}",
+                    s.title,
+                    s.generators,
+                    s.native_best_rank,
+                    s.merged_exam_rank,
+                    s.same_family_ahead,
+                    s.duplicate_neighborhood,
+                    s.film_local,
+                    s.profile
+                );
+            }
+        }
+    }
+
+    /// Live B1 ranking: `STUDIO_DB=... cargo test write_live_ranking_b1 -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB pointing at a real studio.db"]
+    fn write_live_ranking_b1() {
+        use crate::storage::db::Database;
+        use crate::taste::ranking_bench::{run_ranking_benchmark, write_ranking_artifact};
+        use crate::taste::retrieve::{attach_signals, load_films};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        let report =
+            run_ranking_benchmark(&db, &films, &BENCHMARK_SEEDS, BENCHMARK_HOLDOUT_FRAC)
+                .expect("ranking b1");
+        let written = write_ranking_artifact(std::path::Path::new(&out), &report).expect("write");
+        for mode in &report.mean_by_mode {
+            eprintln!(
+                "mode={:<12} ndcg@100={:.3} ndcg@250={:.3} p@10={:.3} loved>dis={:.3} liked>dis={:.3} lovedRank≈{:.0} likedRank≈{:.0} disRank≈{:.0} dis@25={:.3} recall@250={:.3}",
+                mode.mode,
+                mode.ndcg_at_100.mean,
+                mode.ndcg_at_250.mean,
+                mode.precision_at_10.mean,
+                mode.loved_vs_disliked_pairwise.mean,
+                mode.liked_vs_disliked_pairwise.mean,
+                mode.mean_rank_loved.mean,
+                mode.mean_rank_liked.mean,
+                mode.mean_rank_disliked.mean,
+                mode.dislike_rate_top_25.mean,
+                mode.recall_at_250.mean,
+            );
+        }
+        eprintln!("gate: {}", report.gate);
+        eprintln!("wrote {written}");
+    }
+
+    /// Live A2: `STUDIO_DB=... cargo test write_live_retrieval_a2 -- --ignored --nocapture`
+    #[test]
+    #[ignore = "requires STUDIO_DB pointing at a real studio.db"]
+    fn write_live_retrieval_a2() {
+        use crate::storage::db::Database;
+        use crate::taste::retrieve::{attach_signals, enrich_eligible_seeds, load_films};
+        use crate::taste::retrieval_bench::{run_a2_benchmark, write_a2_artifact};
+        let path = std::env::var("STUDIO_DB").expect("STUDIO_DB");
+        let out = std::env::var("STUDIO_TASTE_RUNS_DIR").unwrap_or_else(|_| {
+            std::path::Path::new(&path)
+                .parent()
+                .map(|p| p.join("taste-runs").to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".into())
+        });
+        let db = Database::open(std::path::Path::new(&path)).expect("open db");
+        let mut films = load_films(&db).expect("load films");
+        attach_signals(&mut films);
+        // Enrich collection/related metadata on positive seeds before measuring.
+        let enriched = enrich_eligible_seeds(&db, &mut films, 200, false);
+        eprintln!("enriched {enriched} eligible seeds for collection/related metadata");
+        let report =
+            run_a2_benchmark(&db, &films, &BENCHMARK_SEEDS, BENCHMARK_HOLDOUT_FRAC).expect("a2");
+        let written = write_a2_artifact(std::path::Path::new(&out), &report).expect("write");
+        for point in &report.mean_recall_by_cap {
+            let cap_label = if point.cap == 0 {
+                "uncap".to_string()
+            } else {
+                point.cap.to_string()
+            };
+            eprintln!(
+                "cap={:<5} recall@100={:.3}±{:.3} @250={:.3}±{:.3} @1000={:.3}±{:.3} @cap={:.3} pool≈{:.0}",
+                cap_label,
+                point.recall_at_100.mean,
+                point.recall_at_100.stdev,
+                point.recall_at_250.mean,
+                point.recall_at_250.stdev,
+                point.recall_at_1000.mean,
+                point.recall_at_1000.stdev,
+                point.recall_at_cap.mean,
+                point.pool_size.mean,
+            );
+        }
+        for g in &report.mean_generators {
+            eprintln!(
+                "gen {:<18} standalone={:.3} Δremoved={:.3} med_rank={:?} cands≈{} impl={}",
+                g.generator,
+                g.standalone_recall,
+                g.delta_if_removed,
+                g.median_first_rank,
+                g.candidates_generated,
+                g.implemented,
+            );
+        }
+        eprintln!("semantic: {}", report.semantic.note);
+        eprintln!(
+            "embeddings_in_db={} held_out_with_embedding={}/{}",
+            report.semantic.embeddings_in_db,
+            report.semantic.held_out_positives_with_embedding,
+            report.semantic.held_out_positives
+        );
+        eprintln!("gate: {}", report.gate);
+        eprintln!("wrote {written}");
+    }
+
     fn filmography(
         title: &str,
         tmdb_id: i64,
@@ -520,6 +1983,8 @@ mod tests {
                 label,
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.0,
@@ -874,6 +2339,8 @@ mod tests {
                     label: "similar to log".into(),
                     seed_tmdb_id: Some(9 + (i % 20)),
                     seed_rating: None,
+                    similarity: None,
+                    neighbor_rank: None,
                 }],
                 friend_affinity: 0.0,
                 tmdb_related: 0.55,
@@ -1071,6 +2538,8 @@ mod tests {
                         },
                         seed_tmdb_id: if related { Some(680) } else { None },
                         seed_rating: None,
+                        similarity: None,
+                        neighbor_rank: None,
                     }],
                     directors: vec!["Q".into()],
                     genres: vec!["Crime".into()],
@@ -1078,6 +2547,7 @@ mod tests {
                     media_kind: MediaKind::Movie,
                     runtime: Some(99),
                     vote_count: Some(5000),
+                    semantic_cluster: None,
                 },
                 score: CandidateScore {
                     content: 0.5,
@@ -1112,6 +2582,19 @@ mod tests {
                         crate::taste::explain::EvidenceGrade::None
                     } else {
                         crate::taste::explain::EvidenceGrade::Medium
+                    },
+                    predicted_fit: if features.is_empty() { 0.3 } else { 0.72 },
+                    confidence: 0.6,
+                    hydration_completeness: 0.7,
+                    state: if watchlist || !features.is_empty() {
+                        "recommended".into()
+                    } else {
+                        "held".into()
+                    },
+                    primary_reason: if watchlist || !features.is_empty() {
+                        "recommended".into()
+                    } else {
+                        "low_fit".into()
                     },
                 },
             }

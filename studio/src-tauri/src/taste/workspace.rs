@@ -1,16 +1,19 @@
 use crate::taste::confidence;
-use crate::taste::explain::EvidenceGrade;
+use crate::taste::diversify::{diversify_board_featured, DiversifyConfig};
 use crate::taste::retrieve::MediaKind;
 use crate::taste::score::ScoredCandidate;
-use crate::taste::shortlist::shortlist_n;
 
 pub const NEW_SCORE_BUFFER: usize = 220;
 pub const WATCHLIST_SCORE_BUFFER: usize = 50;
+/// Full New recommendation inventory (Featured + More for you).
 pub const NEW_MAX: usize = 50;
+/// High-value curated front of New — D1.1 scarce-slot policy (F2 OFF for v1).
+pub const FEATURED_MAX: usize = 12;
 pub const WATCHLIST_MAX: usize = 30;
 pub const EXPLORATION_MAX: usize = 0;
 pub const NEW_FILMOGRAPHY_PER_PERSON: usize = 6;
-pub const ALGORITHM_VERSION: &str = "taste-workspace-23-effective-viewings";
+/// Frozen v1: active-2k + Content Fit_v1 + C1 + D1.1 ε=.0075. F2/hybrid OFF.
+pub const ALGORITHM_VERSION: &str = "taste-v1-active2k-d1";
 
 #[derive(Debug, Clone, Default)]
 pub struct Workspace {
@@ -38,14 +41,26 @@ pub fn split_ranked_buffers(ranked: Vec<ScoredCandidate>) -> Vec<ScoredCandidate
 }
 
 pub fn eligible(row: &ScoredCandidate) -> bool {
-    row.candidate.tmdb_id.is_some()
-        && row.candidate.media_kind == MediaKind::Movie
-        && row.eligibility.passed
-        && row.eligibility.evidence_grade.displayable()
-        && (row.candidate.watchlist || confidence::occupies_new(row))
+    if row.candidate.tmdb_id.is_none() || row.candidate.media_kind != MediaKind::Movie {
+        return false;
+    }
+    if row.candidate.watchlist {
+        // Watchlist still needs a usable bridge; C1 state is for New.
+        return row.eligibility.passed;
+    }
+    match row.eligibility.state.as_str() {
+        "recommended" | "exploratory" => true,
+        "held" => false,
+        _ => row.eligibility.passed && row.eligibility.predicted_fit >= 0.50,
+    }
 }
 
 pub fn assemble(ranked: &[ScoredCandidate]) -> Workspace {
+    // V1 freeze: D1.1 Featured only. F2 stays experimental (`light_with_f2`).
+    assemble_with_diversify(ranked, &DiversifyConfig::light())
+}
+
+pub fn assemble_with_diversify(ranked: &[ScoredCandidate], cfg: &DiversifyConfig) -> Workspace {
     let pool: Vec<_> = ranked.iter().filter(|c| eligible(c)).cloned().collect();
     let new_pool: Vec<_> = pool
         .iter()
@@ -58,12 +73,12 @@ pub fn assemble(ranked: &[ScoredCandidate]) -> Workspace {
         .cloned()
         .collect();
 
+    // Content-ordered inventory (~50), then Featured-N via D1.1(+F2).
     let mut new_picks = shortlist_new_pool(&new_pool, NEW_MAX);
-    confidence::sort_workspace(&mut new_picks);
     cap_new_filmography(&mut new_picks, NEW_FILMOGRAPHY_PER_PERSON);
     new_picks.retain(|c| confidence::occupies_new(c));
     refill_new_without_resume(&mut new_picks, &new_pool, NEW_FILMOGRAPHY_PER_PERSON);
-    confidence::sort_workspace(&mut new_picks);
+    new_picks = diversify_board_featured(&new_picks, cfg, Some(FEATURED_MAX));
     new_picks.truncate(NEW_MAX);
 
     confidence::sort_workspace(&mut watch_pool);
@@ -90,19 +105,41 @@ fn shortlist_new_pool(pool: &[ScoredCandidate], target: usize) -> Vec<ScoredCand
         return Vec::new();
     }
     let target = target.min(pool.len());
-    let strong: Vec<_> = pool
+    // C1: Recommended first, then Exploratory — Content fit order for inventory.
+    // Featured scarce-slot policy (D1.1/F2) is applied once after filmography caps.
+    let mut recommended: Vec<_> = pool
         .iter()
-        .filter(|c| c.eligibility.evidence_grade == EvidenceGrade::Strong)
+        .filter(|c| c.eligibility.state == "recommended")
         .cloned()
         .collect();
-    let medium: Vec<_> = pool
+    let mut exploratory: Vec<_> = pool
         .iter()
-        .filter(|c| c.eligibility.evidence_grade == EvidenceGrade::Medium)
+        .filter(|c| c.eligibility.state == "exploratory")
         .cloned()
         .collect();
-    let mut selected = shortlist_n(&strong, target.min(strong.len()));
+    let mut fallback: Vec<_> = pool
+        .iter()
+        .filter(|c| c.eligibility.state != "recommended" && c.eligibility.state != "exploratory")
+        .cloned()
+        .collect();
+
+    let by_fit = |a: &ScoredCandidate, b: &ScoredCandidate| {
+        crate::taste::diversify::fit_of(b)
+            .partial_cmp(&crate::taste::diversify::fit_of(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.candidate.title.cmp(&b.candidate.title))
+    };
+    recommended.sort_by(by_fit);
+    exploratory.sort_by(by_fit);
+    fallback.sort_by(by_fit);
+
+    let mut selected = Vec::new();
+    selected.extend(recommended.into_iter().take(target));
     if selected.len() < target {
-        selected.extend(shortlist_n(&medium, target - selected.len()));
+        selected.extend(exploratory.into_iter().take(target - selected.len()));
+    }
+    if selected.len() < target {
+        selected.extend(fallback.into_iter().take(target - selected.len()));
     }
     selected
 }
@@ -306,6 +343,8 @@ mod tests {
                     },
                     seed_tmdb_id: None,
                     seed_rating: None,
+                    similarity: None,
+                    neighbor_rank: None,
                 }],
                 directors: vec!["Nolan".into()],
                 genres: vec!["Drama".into()],
@@ -313,6 +352,7 @@ mod tests {
                 media_kind: MediaKind::Movie,
                 runtime: Some(110),
                 vote_count: Some(400),
+                semantic_cluster: None,
             },
             score: CandidateScore {
                 content: total,
@@ -357,6 +397,19 @@ mod tests {
                     EvidenceGrade::None
                 } else {
                     EvidenceGrade::Medium
+                },
+                predicted_fit: if appearances > 0 { 0.72 } else { 0.3 },
+                confidence: 0.6,
+                hydration_completeness: 0.7,
+                state: if watchlist || appearances > 0 {
+                    "recommended".into()
+                } else {
+                    "held".into()
+                },
+                primary_reason: if watchlist || appearances > 0 {
+                    "recommended".into()
+                } else {
+                    "low_fit".into()
                 },
             },
         }
@@ -406,32 +459,40 @@ mod tests {
         weak.matched_features.clear();
         weak.person_keys.clear();
         weak.positive_features.clear();
-        assert!(crate::taste::confidence::match_score(&weak) < crate::taste::confidence::MATCH_SCORE_FLOOR);
+        weak.eligibility.state = "held".into();
+        weak.eligibility.passed = false;
+        weak.eligibility.predicted_fit = 0.30;
+        weak.eligibility.primary_reason = "low_fit".into();
         let ws = assemble(&[weak, row(10, false, 8, 0.5)]);
         assert_eq!(ws.new_picks.len(), 1);
         assert_eq!(ws.new_picks[0].candidate.tmdb_id, Some(10));
     }
 
     #[test]
-    fn displayed_new_order_is_fit_then_total() {
+    fn displayed_new_order_is_content_fit_first() {
         let mut low_fit = row(1, false, 8, 0.99);
-        low_fit.eligibility.candidate_fit = 0.4;
+        low_fit.eligibility.predicted_fit = 0.70;
         let mut high_fit = row(2, false, 8, 0.01);
-        high_fit.eligibility.candidate_fit = 1.0;
+        high_fit.eligibility.predicted_fit = 0.80;
         let ws = assemble(&[low_fit, high_fit]);
         assert_eq!(ws.new_picks[0].candidate.tmdb_id, Some(2));
     }
 
     #[test]
-    fn displayed_new_places_strong_before_medium_fillers() {
-        let mut medium = row(1, false, 8, 0.99);
-        medium.candidate.sources[0].kind = RetrievalKind::Related;
-        let mut strong = row(2, false, 8, 0.01);
-        strong.candidate.sources[0].kind = RetrievalKind::Related;
-        strong.eligibility.evidence_grade = EvidenceGrade::Strong;
-        strong.eligibility.candidate_fit = 0.3;
-        let ws = assemble(&[medium, strong]);
-        assert_eq!(ws.new_picks[0].candidate.tmdb_id, Some(2));
+    fn displayed_new_keeps_raw_order_when_fits_clearly_separated() {
+        let mut higher = row(1, false, 8, 0.99);
+        higher.candidate.sources[0].kind = RetrievalKind::Related;
+        higher.eligibility.predicted_fit = 0.78;
+        let mut lower = row(2, false, 8, 0.01);
+        lower.candidate.sources[0].kind = RetrievalKind::Related;
+        lower.eligibility.evidence_grade = EvidenceGrade::Strong;
+        lower.eligibility.predicted_fit = 0.70;
+        let ws = assemble(&[higher, lower]);
+        assert_eq!(
+            ws.new_picks[0].candidate.tmdb_id,
+            Some(1),
+            "clear Content-fit gaps must not be overturned by diversification"
+        );
     }
 
     #[test]
@@ -452,6 +513,8 @@ mod tests {
                 label: "John Powell".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }];
             r.matched_features = vec![person_feat("John Powell", "composer", 9, 0.55)];
             r.person_keys = vec!["John Powell".into()];
@@ -473,14 +536,8 @@ mod tests {
                     .any(|s| s.label == "John Powell")
             })
             .count();
-        assert_eq!(powell, 0, "composer filmography must not occupy New, got {powell}");
+        assert_eq!(powell, NEW_FILMOGRAPHY_PER_PERSON, "filmography cap still applies, got {powell}");
         assert!(!ws.new_picks.is_empty());
-        assert!(
-            ws.new_picks.iter().all(|c| {
-                crate::taste::confidence::match_score(c) >= crate::taste::confidence::MATCH_SCORE_FLOOR
-            }),
-            "New must not contain cards below the match floor"
-        );
     }
 
     #[test]
@@ -492,6 +549,8 @@ mod tests {
             label: "Greig Fraser".into(),
             seed_tmdb_id: None,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }];
         kts.matched_features = fraser_new_feats();
         kts.person_keys = vec!["Greig Fraser".into()];
@@ -511,6 +570,8 @@ mod tests {
             label: "John Powell".into(),
             seed_tmdb_id: None,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }];
         antz.matched_features = vec![person_feat("John Powell", "composer", 9, 0.55)];
         antz.person_keys = vec!["John Powell".into()];
@@ -518,11 +579,11 @@ mod tests {
         antz.eligibility.candidate_fit = 1.0;
         let other = row(2, false, 8, 0.8);
         let ws = assemble(&[antz, other]);
+        // C1: Content Fit_v1 admits composer filmography when Recommended.
         assert!(
-            ws.new_picks.iter().all(|c| c.candidate.tmdb_id != Some(1)),
-            "composer résumé cards must stay off New"
+            ws.new_picks.iter().any(|c| c.candidate.tmdb_id == Some(1)),
+            "composer résumé with Recommended state can occupy New"
         );
-        assert_eq!(ws.new_picks[0].candidate.tmdb_id, Some(2));
     }
 
     #[test]
@@ -535,6 +596,8 @@ mod tests {
                 label: "Greig Fraser".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }];
             r.matched_features = fraser_new_feats();
             r.person_keys = vec!["Greig Fraser".into()];
@@ -565,12 +628,16 @@ mod tests {
                 label: "Greig Fraser".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::Related,
                 label: "similar to The Batman".into(),
                 seed_tmdb_id: Some(414_906),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
         ];
         mixed.eligibility.candidate_fit = 1.0;
@@ -588,12 +655,16 @@ mod tests {
                 label: "Greig Fraser".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::Related,
                 label: "similar to a catalog title".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
         ];
         mixed.matched_features = fraser_new_feats();
@@ -614,12 +685,16 @@ mod tests {
                 label: "John Powell".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::Related,
                 label: "similar to Pulp Fiction".into(),
                 seed_tmdb_id: Some(680),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
         ];
         mixed.matched_features = vec![person_feat("John Powell", "composer", 9, 0.55)];
@@ -628,12 +703,11 @@ mod tests {
         mixed.eligibility.candidate_fit = 1.0;
         let other = row(2, false, 8, 0.8);
         let ws = assemble(&[mixed, other]);
+        // C1: Recommended Content Fit admits regardless of composer+Related provenance.
         assert!(
-            ws.new_picks.iter().all(|c| c.candidate.tmdb_id != Some(1)),
-            "composer résumé plus Related must stay off New"
+            ws.new_picks.iter().any(|c| c.candidate.tmdb_id == Some(1)),
+            "composer résumé plus Related can occupy New under C1"
         );
-        assert_eq!(ws.new_picks[0].candidate.tmdb_id, Some(2));
-        assert!(ws.explore_picks.iter().all(|c| c.candidate.tmdb_id != Some(1)));
     }
 
     #[test]
@@ -644,8 +718,14 @@ mod tests {
             label: "John Powell".into(),
             seed_tmdb_id: None,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }];
         weak.eligibility.candidate_fit = 0.32;
+        weak.eligibility.predicted_fit = 0.32;
+        weak.eligibility.state = "held".into();
+        weak.eligibility.passed = false;
+        weak.eligibility.primary_reason = "low_fit".into();
         let other = row(2, false, 8, 0.8);
         let ws = assemble(&[weak, other]);
         assert!(
@@ -665,6 +745,8 @@ mod tests {
             label: "Edgar Wright".into(),
             seed_tmdb_id: None,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }];
         seconds.eligibility.candidate_fit = 1.0;
         let other = row(2, false, 8, 0.8);
@@ -680,6 +762,8 @@ mod tests {
     fn short_runtime_rows_are_not_assembled() {
         let mut short = row(1, false, 8, 0.9);
         short.eligibility.passed = false;
+        short.eligibility.state = "held".into();
+        short.eligibility.primary_reason = "short-runtime".into();
         short.eligibility.passed_because = vec!["short-runtime".into()];
         let ws = assemble(&[short, row(2, false, 8, 0.5)]);
         assert_eq!(ws.new_picks.len(), 1);
@@ -704,6 +788,8 @@ mod tests {
             label: "similar to Pulp Fiction".into(),
             seed_tmdb_id: Some(680),
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }];
         r
     }
@@ -733,6 +819,8 @@ mod tests {
                 label: "Greig Fraser".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }];
             r.matched_features = fraser_new_feats();
             r.person_keys = vec!["Greig Fraser".into()];
@@ -803,10 +891,40 @@ mod tests {
         low.matched_features.clear();
         low.person_keys.clear();
         low.positive_features.clear();
-        assert!(crate::taste::confidence::match_score(&low) < crate::taste::confidence::MATCH_SCORE_FLOOR);
+        assert!(
+            crate::taste::confidence::legacy_match_score(&low)
+                < crate::taste::confidence::MATCH_SCORE_FLOOR
+                || low.eligibility.predicted_fit < 0.5
+        );
         let ws = assemble(&[low]);
         assert_eq!(ws.watchlist_picks.len(), 1);
         assert_eq!(ws.watchlist_picks[0].candidate.tmdb_id, Some(7));
         assert!(ws.new_picks.is_empty());
+    }
+
+    #[test]
+    fn web_discovery_row_can_assemble_onto_new() {
+        let mut found = row(88_001, false, 4, 0.22);
+        found.candidate.sources = vec![RetrievalSource {
+            kind: RetrievalKind::Discovery,
+            label: "atmospheric neo-noir like Prisoners".into(),
+            seed_tmdb_id: None,
+            seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
+        }];
+        found.eligibility.evidence_grade = EvidenceGrade::None;
+        found.eligibility.passed = true;
+        found.eligibility.state = "recommended".into();
+        found.eligibility.predicted_fit = 0.72;
+        found.eligibility.primary_reason = "recommended".into();
+        found.candidate.genres = vec!["Crime".into(), "Thriller".into()];
+        let ws = assemble(&[found, row(2, false, 8, 0.5)]);
+        assert!(
+            ws.new_picks
+                .iter()
+                .any(|c| c.candidate.tmdb_id == Some(88_001)),
+            "web discovery must survive workspace assembly onto New"
+        );
     }
 }

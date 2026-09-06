@@ -8,8 +8,8 @@ use crate::taste::score::{score_candidate, ScoredCandidate};
 use serde_json::Value;
 use std::collections::HashSet;
 
-pub const DISCOVERY_FLOOR: f32 = 0.12;
-pub const MAX_DISCOVERIES: usize = 3;
+pub const DISCOVERY_FLOOR: f32 = 0.08;
+pub const MAX_DISCOVERIES: usize = 8;
 
 pub fn parse_search_titles(raw: &Value) -> Vec<(String, Option<i32>)> {
     let mut out = Vec::new();
@@ -81,22 +81,35 @@ fn score_lookup(
             label: query.to_string(),
             seed_tmdb_id: None,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }],
         friend_affinity: 0.0,
         tmdb_related: 0.0,
-    media_kind: MediaKind::Movie,
+        media_kind: MediaKind::Movie,
     };
     let _ = crate::taste::retrieve::enrich_missing(db, std::slice::from_mut(&mut candidate), 1, false);
-    let scored = score_candidate(profile, &candidate);
-    if !scored.eligibility.passed || !scored.eligibility.evidence_grade.displayable() {
+    let mut scored = score_candidate(profile, &candidate);
+    if is_short_runtime(scored.candidate.runtime) {
         return None;
     }
     let sparse_facet = matches_sparse_facet(profile, &scored);
-    if scored.score.total >= DISCOVERY_FLOOR || sparse_facet {
+    // Web discovery is meant to escape the TMDB-neighbor pool. Do not require
+    // the same craft-evidence grade as résumé filmography; overall fit + a
+    // non-empty bridge is enough to enter the ranked pool.
+    let has_bridge = !scored.matched_features.is_empty()
+        || scored.score.semantic_coverage
+        || sparse_facet;
+    if (scored.score.total >= DISCOVERY_FLOOR && has_bridge) || sparse_facet {
+        scored.eligibility.passed = true;
         Some(scored)
     } else {
         None
     }
+}
+
+fn is_short_runtime(runtime: Option<i32>) -> bool {
+    matches!(runtime, Some(rt) if (1..crate::taste::score::FEATURE_RUNTIME_MIN).contains(&rt))
 }
 
 fn matches_sparse_facet(profile: &FeatureProfile, scored: &ScoredCandidate) -> bool {
@@ -130,5 +143,6 @@ mod tests {
     #[test]
     fn floor_constant() {
         assert!(DISCOVERY_FLOOR > 0.0);
+        assert!(MAX_DISCOVERIES >= 8);
     }
 }

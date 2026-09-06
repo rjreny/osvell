@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 
 pub const CALL1_SYSTEM: &str = r#"You are a film-taste critic inside Studio.
 The deterministic system already scored a shortlist from the user's complete rating history.
-You do NOT select recommendations. You critique the shortlist and optionally request targeted research.
+Your assessments WILL adjust the ranking of assessed shortlist candidates within bounded limits.
+You do NOT select recommendations, invent titles, or return a full ordered list. You critique the shortlist and optionally request targeted research.
 
 Return JSON only:
 {
@@ -23,12 +24,12 @@ Return JSON only:
 }
 
 Rules:
-- Assess candidates that look superficial, polarizing, or mismatched. You may skip obvious strong fits.
+- Assess suspicious, superficial, polarizing, weak, or mismatched candidates among the shortlist. You may also mark clear strong fits.
 - fit must be one of: strong, mixed, superficial.
 - Mark contextualOnly candidates as fit=superficial unless another primary feature clearly saves them.
 - Decade, runtime, and catalog exposure are not recommendation targets.
 - At most 3 discoveryQueries. Each must name a specific facet the shortlist is missing, preferably a taste mode (visual, comedy, intensity, spectacle, atmosphere, comfort).
-- Do not emit picks, rankings, or a recommended list.
+- Do not emit picks, rankings, a full ordered list, or titles absent from the provided shortlist.
 - Do not ignore negative evidence or polarizing features.
 - Raw JSON object only.
 "#;
@@ -156,6 +157,40 @@ pub fn parse_critic(raw: &Value) -> Result<CriticReport, String> {
 
 pub fn parse_reasoner(raw: &Value) -> Result<ReasonerReport, String> {
     serde_json::from_value(raw.clone()).map_err(|e| format!("Call 2 JSON: {e}"))
+}
+
+pub fn apply_critic_rerank(ranked: &mut [ScoredCandidate], critic: &CriticReport) {
+    for candidate in ranked.iter_mut() {
+        let tmdb_id = candidate
+            .candidate
+            .tmdb_id
+            .map(|id| format!("tmdb:{id}"));
+        let assessment = critic.candidate_assessments.iter().find(|assessment| {
+            tmdb_id
+                .as_deref()
+                .map(|id| assessment.id.trim().eq_ignore_ascii_case(id))
+                .unwrap_or(false)
+                || assessment
+                    .id
+                    .trim()
+                    .eq_ignore_ascii_case(candidate.candidate.title.trim())
+        });
+        let factor = assessment.and_then(|assessment| {
+            if assessment.fit.eq_ignore_ascii_case("strong") {
+                Some(1.12)
+            } else if assessment.fit.eq_ignore_ascii_case("mixed") {
+                Some(0.90)
+            } else if assessment.fit.eq_ignore_ascii_case("superficial") {
+                Some(0.50)
+            } else {
+                None
+            }
+        });
+        if let Some(factor) = factor {
+            candidate.score.total = (candidate.score.total * factor).clamp(-1.5, 1.5);
+        }
+    }
+    crate::taste::confidence::sort_workspace(ranked);
 }
 
 pub fn ground_reasoner(report: ReasonerReport, profile: &FeatureProfile) -> ReasonerReport {
@@ -743,6 +778,8 @@ fn candidate_payload(c: &ScoredCandidate, rank: usize, critic: Option<&CriticRep
         "watchlist": c.candidate.watchlist,
         "deterministicRank": rank,
         "deterministicScore": (c.score.total as f64 * 100.0).round() / 100.0,
+        "overallTotal": (c.score.total as f64 * 100.0).round() / 100.0,
+        "semanticFit": (c.score.semantic_fit as f64 * 100.0).round() / 100.0,
         "evidenceGrade": evidence_grade(c),
         "evidenceLimited": limited,
         "scoreBreakdown": {
@@ -753,6 +790,8 @@ fn candidate_payload(c: &ScoredCandidate, rank: usize, critic: Option<&CriticRep
             "watchlist": (c.score.watchlist as f64 * 100.0).round() / 100.0,
             "novelty": (c.score.novelty as f64 * 100.0).round() / 100.0,
             "negative": (c.score.negative_evidence as f64 * 100.0).round() / 100.0,
+            "semanticFit": (c.score.semantic_fit as f64 * 100.0).round() / 100.0,
+            "overallTotal": (c.score.total as f64 * 100.0).round() / 100.0,
         },
         "reasons": c.display_reasons.iter().take(4).cloned().collect::<Vec<_>>(),
         "scoringReasons": c.scoring_reasons.iter().take(4).cloned().collect::<Vec<_>>(),
@@ -855,6 +894,8 @@ mod tests {
                     label: "x".into(),
                     seed_tmdb_id: Some(2),
                     seed_rating: None,
+                    similarity: None,
+                    neighbor_rank: None,
                 }],
                 directors: vec!["Michael Mann".into()],
                 genres: vec!["Crime".into()],
@@ -862,6 +903,7 @@ mod tests {
                 media_kind: crate::taste::retrieve::MediaKind::Movie,
                 runtime: Some(110),
                 vote_count: Some(400),
+                semantic_cluster: None,
             },
             score: CandidateScore {
                 content: 0.7,
@@ -901,7 +943,10 @@ mod tests {
         let p = call1_payload(&[], &profile, &[scored()]);
         assert!(payload_has_breakdown(&p));
         assert!(p["candidates"][0]["scoreBreakdown"]["content"].is_number());
+        assert!(p["candidates"][0]["semanticFit"].is_number());
+        assert!(p["candidates"][0]["overallTotal"].is_number());
         assert!(p["candidates"][0]["evidence"].as_array().unwrap().len() >= 1);
+        assert!(p["candidates"][0]["negativeFeatures"].as_array().unwrap().len() >= 1);
         assert!(p["candidates"][0]["displayReasons"].is_array());
         assert!(p["candidates"][0]["eligibility"].is_object());
         assert!(p["tasteProfile"]["contextualSignals"].is_array());
@@ -915,6 +960,43 @@ mod tests {
         assert!(p2["originalShortlist"][0]["evidenceGrade"].is_number());
         assert!(p2["originalShortlist"][0]["deterministicRank"].is_number());
         assert!(CALL2_SYSTEM.contains("do NOT select, rank"));
+    }
+
+    #[test]
+    fn critic_rerank_demotes_superficial_below_strong_at_same_total() {
+        let mut superficial = scored();
+        superficial.candidate.tmdb_id = Some(10);
+        superficial.candidate.title = "Surface Match".into();
+        superficial.score.total = 0.5;
+        let mut strong = scored();
+        strong.candidate.tmdb_id = Some(20);
+        strong.candidate.title = "Deep Match".into();
+        strong.score.total = 0.5;
+        let critic = CriticReport {
+            candidate_assessments: vec![
+                CandidateAssessment {
+                    id: "tmdb:10".into(),
+                    fit: "superficial".into(),
+                    reason: String::new(),
+                    concerns: vec![],
+                },
+                CandidateAssessment {
+                    id: "deep match".into(),
+                    fit: "strong".into(),
+                    reason: String::new(),
+                    concerns: vec![],
+                },
+            ],
+            taste_gaps: vec![],
+            discovery_queries: vec![],
+        };
+        let mut ranked = vec![superficial, strong];
+
+        apply_critic_rerank(&mut ranked, &critic);
+
+        assert_eq!(ranked[0].candidate.tmdb_id, Some(20));
+        assert!((ranked[0].score.total - 0.56).abs() < f32::EPSILON);
+        assert!((ranked[1].score.total - 0.25).abs() < f32::EPSILON);
     }
 
     #[test]

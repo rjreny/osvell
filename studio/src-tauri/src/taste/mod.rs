@@ -1,21 +1,46 @@
+pub mod board_validation;
 pub mod cache;
 pub mod confidence;
+pub mod continuity;
+pub mod continuity_calibration;
+pub mod craft_calibration;
 pub mod dimensions;
 pub mod diagnostics;
 pub mod discover;
+pub mod diversify;
+pub mod diversify_calibration;
+pub mod eligibility;
+pub mod eligibility_calibration;
 pub mod eval;
+pub mod exam_calibration;
+pub mod exam_policy;
 pub mod explain;
+pub mod f2_board_ab;
+pub mod family_fit;
 pub mod features;
 pub mod feedback;
+pub mod form;
+pub mod form_calibration;
 pub mod freeze;
+pub mod hybrid_board_ab;
+pub mod hybrid_calibration;
+pub mod hybrid_exam;
+pub mod match_calibration;
 pub mod preference;
 pub mod provenance;
+pub mod quality;
+pub mod quality_calibration;
+pub mod ranking_bench;
 pub mod reason;
 pub mod retrieve;
+pub mod retrieval_bench;
 pub mod runlog;
 pub mod score;
 pub mod semantic;
+pub mod semantic_universe;
 pub mod shortlist;
+pub mod universe_calibration;
+pub mod v1_policy;
 pub mod validate;
 pub mod workspace;
 
@@ -184,6 +209,8 @@ pub struct TasteSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TasteReport {
+    #[serde(default)]
+    pub algorithm_version: String,
     pub title: String,
     pub summary: String,
     pub affinities: Vec<TasteAffinity>,
@@ -209,6 +236,8 @@ pub struct TasteReport {
     pub run_id: String,
     #[serde(default)]
     pub diagnostics: crate::taste::diagnostics::TasteDiagnostics,
+    #[serde(default)]
+    pub board_eval: Option<eval::BoardEval>,
 }
 
 impl TasteReport {
@@ -751,9 +780,7 @@ pub fn load_state(db: &Database) -> Result<TasteState, String> {
     crate::taste::feedback::apply_feedback_adjustments(&mut profile, &feedback_adjustments);
     let feedback = crate::taste::feedback::list_feedback(db).unwrap_or_default();
     let hide = crate::taste::feedback::hide_ids(&feedback);
-    let report = db
-        .get_meta(META_REPORT)?
-        .and_then(|raw| serde_json::from_str::<TasteReport>(&raw).ok())
+    let report = load_current_report(db)?
         .map(|r| filter_report_with_mood(r.normalize(), &hide, db))
         .transpose()?;
     Ok(TasteState {
@@ -763,6 +790,12 @@ pub fn load_state(db: &Database) -> Result<TasteState, String> {
         feedback,
         observation: crate::taste::feedback::observation_summary(db).unwrap_or_default(),
     })
+}
+
+fn load_current_report(db: &Database) -> Result<Option<TasteReport>, String> {
+    Ok(db.get_meta(META_REPORT)?
+        .and_then(|raw| serde_json::from_str::<TasteReport>(&raw).ok())
+        .filter(|report| report.algorithm_version == workspace::ALGORITHM_VERSION))
 }
 
 fn filter_report(mut report: TasteReport, hide: &std::collections::HashSet<i64>) -> TasteReport {
@@ -858,7 +891,7 @@ pub fn analyze_with_run_log(
             .to_string()
     })?;
     let seeds_refreshed =
-        retrieve::enrich_eligible_seeds(db, &mut films, 40, force_refresh);
+        retrieve::enrich_eligible_seeds(db, &mut films, retrieve::SEED_HYDRATE_CAP, force_refresh);
     let mut profile = feature_profile_from_films(&films);
     let feedback_adjustments = crate::taste::feedback::active_feedback_adjustments(db)?;
     crate::taste::feedback::apply_feedback_adjustments(&mut profile, &feedback_adjustments);
@@ -892,6 +925,8 @@ pub fn analyze_with_run_log(
         &candidates,
         &semantic_scores,
     );
+    crate::taste::semantic::attach_semantic_clusters_from_db(db, &mut pool.ranked);
+    crate::taste::semantic::attach_semantic_clusters_from_db(db, &mut pool.dropped_contextual);
     crate::taste::feedback::filter_mood_suppressed_candidates(db, &mut pool.ranked)?;
     let replay = if cfg!(debug_assertions) && std::env::var_os("STUDIO_TASTE_REPLAY").is_some() {
         Some(match eval::run_replay(db, &key, &films, 20) {
@@ -901,6 +936,43 @@ pub fn analyze_with_run_log(
                 ..Default::default()
             },
         })
+    } else {
+        None
+    };
+    let _benchmark_path = if std::env::var_os("STUDIO_TASTE_BENCHMARK").is_some() {
+        match eval::run_retrieval_benchmark(
+            db,
+            &films,
+            &eval::BENCHMARK_SEEDS,
+            eval::BENCHMARK_HOLDOUT_FRAC,
+        ) {
+            Ok(report) => {
+                let dir = std::env::var_os("STUDIO_TASTE_RUNS_DIR")
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        std::env::temp_dir().join("studio-taste-runs")
+                    });
+                match eval::write_benchmark_artifact(&dir, &report) {
+                    Ok(path) => {
+                        eprintln!(
+                            "[studio] retrieval benchmark recall@250 mean={:.3}±{:.3} pool≈{:.0} → {path}",
+                            report.recall_at_250.mean,
+                            report.recall_at_250.stdev,
+                            report.candidate_pool_size.mean
+                        );
+                        Some(path)
+                    }
+                    Err(err) => {
+                        eprintln!("[studio] retrieval benchmark write failed: {err}");
+                        None
+                    }
+                }
+            }
+            Err(err) => {
+                eprintln!("[studio] retrieval benchmark failed: {err}");
+                None
+            }
+        }
     } else {
         None
     };
@@ -946,6 +1018,9 @@ pub fn analyze_with_run_log(
         }
         Err(_) => empty_critic(),
     };
+    reason::apply_critic_rerank(&mut pool.ranked, &critic);
+    let mut short = short;
+    reason::apply_critic_rerank(&mut short, &critic);
 
     progress(JobProgress {
         job: "taste".into(),
@@ -984,7 +1059,7 @@ pub fn analyze_with_run_log(
                 Err(_) => {}
             }
         }
-        discoveries.truncate(3);
+        discoveries.truncate(discover::MAX_DISCOVERIES);
     }
 
     let mut ranked_for_workspace = pool.ranked.clone();
@@ -1032,6 +1107,25 @@ pub fn analyze_with_run_log(
         db,
         &validated.workspace.pre_feedback_pool,
     )?;
+    let probe_titles = crate::taste::feedback::list_feedback(db)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|row| row.action == crate::taste::feedback::ACTION_REJECTED)
+        .filter_map(|row| {
+            films
+                .iter()
+                .find(|film| film.tmdb_id == Some(row.tmdb_id))
+                .map(|film| film.title.clone())
+        })
+        .collect::<Vec<_>>();
+    let probe_refs: Vec<&str> = probe_titles.iter().map(|title| title.as_str()).collect();
+    let board_eval =
+        eval::evaluate_displayed_board(&display_ws.new_picks, &films, &probe_refs);
+    let novelty =
+        crate::taste::semantic_universe::semantic_novelty_for_candidates(&display_ws.new_picks);
+    let mut semantic_stats = semantic_stats;
+    semantic_stats.semantic_only_new = novelty.semantic_only;
+    semantic_stats.also_graph_reachable_new = novelty.also_graph_reachable;
     let new_picks = to_taste_picks(
         db,
         &report_run_id,
@@ -1136,6 +1230,7 @@ pub fn analyze_with_run_log(
     );
     let diagnostics = crate::taste::diagnostics::derive(&films, &profile);
     let report = TasteReport {
+        algorithm_version: workspace::ALGORITHM_VERSION.into(),
         title: narrative.title,
         summary: narrative.summary,
         affinities: narrative.affinities,
@@ -1153,6 +1248,7 @@ pub fn analyze_with_run_log(
         run_log_path,
         run_id: report_run_id,
         diagnostics,
+        board_eval: Some(board_eval),
     };
     db.set_meta(META_REPORT, &serde_json::to_string(&report).unwrap_or_default())?;
     Ok(report)
@@ -1171,6 +1267,19 @@ fn finish_from_snapshot(
     let mut films = load_films(db)?;
     attach_signals(&mut films);
     let diagnostics = crate::taste::diagnostics::derive(&films, &feature_profile_from_films(&films));
+    let probe_titles = crate::taste::feedback::list_feedback(db)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|row| row.action == crate::taste::feedback::ACTION_REJECTED)
+        .filter_map(|row| {
+            films
+                .iter()
+                .find(|film| film.tmdb_id == Some(row.tmdb_id))
+                .map(|film| film.title.clone())
+        })
+        .collect::<Vec<_>>();
+    let probe_refs: Vec<&str> = probe_titles.iter().map(|title| title.as_str()).collect();
+    let board_eval = eval::evaluate_displayed_board(&ws.new_picks, &films, &probe_refs);
     let empty_critic = empty_critic();
     let new_picks = to_taste_picks(db, &report_run_id, &[], &ws.new_picks, &empty_critic, &[])?;
     let explore_picks = to_taste_picks(db, &report_run_id, &[], &ws.explore_picks, &empty_critic, &[])?;
@@ -1179,6 +1288,7 @@ fn finish_from_snapshot(
     let explore_list = explore_picks.0;
     let watch_list = watch_picks.0;
     let report = TasteReport {
+        algorithm_version: workspace::ALGORITHM_VERSION.into(),
         title: snap.narrative.title.clone(),
         summary: snap.narrative.summary.clone(),
         affinities: snap.narrative.affinities.clone(),
@@ -1196,6 +1306,7 @@ fn finish_from_snapshot(
         run_log_path: None,
         run_id: report_run_id,
         diagnostics,
+        board_eval: Some(board_eval),
     };
     db.set_meta(META_REPORT, &serde_json::to_string(&report).unwrap_or_default())?;
     Ok(report)
@@ -1889,6 +2000,8 @@ mod tests {
             keywords: vec![],
             recommendations: vec![],
             similar: vec![],
+            collection_name: None,
+            collection: vec![],
             runtime: Some(100),
             poster: poster.map(str::to_string),
             vote_count: Some(100),
@@ -1985,6 +2098,16 @@ mod tests {
         assert!(report.watchlist_picks.is_empty());
         assert!(report.explore_picks.is_empty());
         assert_eq!(report.picks.len(), 1);
+        let db = Database::in_memory().unwrap();
+        db.set_meta(META_REPORT, raw).unwrap();
+        assert!(load_current_report(&db).unwrap().is_none());
+        let mut current = report;
+        current.algorithm_version = "taste-workspace-23-effective-viewings".into();
+        db.set_meta(META_REPORT, &serde_json::to_string(&current).unwrap()).unwrap();
+        assert!(load_current_report(&db).unwrap().is_none());
+        current.algorithm_version = workspace::ALGORITHM_VERSION.into();
+        db.set_meta(META_REPORT, &serde_json::to_string(&current).unwrap()).unwrap();
+        assert_eq!(load_current_report(&db).unwrap().unwrap().new_picks[0].title, "Heat");
     }
 
     #[test]

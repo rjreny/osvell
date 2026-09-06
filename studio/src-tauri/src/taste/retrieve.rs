@@ -28,6 +28,8 @@ pub struct FilmRecord {
     pub keywords: Vec<Keyword>,
     pub recommendations: Vec<LibraryItem>,
     pub similar: Vec<LibraryItem>,
+    pub collection_name: Option<String>,
+    pub collection: Vec<LibraryItem>,
     pub runtime: Option<i32>,
     pub poster: Option<String>,
     pub vote_count: Option<i64>,
@@ -63,10 +65,48 @@ pub enum RetrievalKind {
     RelatedRecommendations,
     RelatedSimilar,
     Filmography,
+    Collection,
+    /// Semantic neighbors of one strongly liked film (film-local).
+    SemanticFilmLocal,
+    /// Semantic neighbors of the aggregate positive taste representation.
+    SemanticProfile,
     Friend,
     Watchlist,
     Exploration,
     Discovery,
+}
+
+/// Coarse generator family for examination priority / diagnostics.
+/// Multiple edges inside one family are not independent taste votes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GeneratorFamily {
+    Related,
+    Filmography,
+    Collection,
+    SemanticFilmLocal,
+    SemanticProfile,
+    Friend,
+    Watchlist,
+    Discovery,
+    Exploration,
+}
+
+impl RetrievalKind {
+    pub fn generator_family(self) -> GeneratorFamily {
+        match self {
+            Self::Related | Self::RelatedRecommendations | Self::RelatedSimilar => {
+                GeneratorFamily::Related
+            }
+            Self::Filmography => GeneratorFamily::Filmography,
+            Self::Collection => GeneratorFamily::Collection,
+            Self::SemanticFilmLocal => GeneratorFamily::SemanticFilmLocal,
+            Self::SemanticProfile => GeneratorFamily::SemanticProfile,
+            Self::Friend => GeneratorFamily::Friend,
+            Self::Watchlist => GeneratorFamily::Watchlist,
+            Self::Discovery => GeneratorFamily::Discovery,
+            Self::Exploration => GeneratorFamily::Exploration,
+        }
+    }
 }
 
 impl RetrievalKind {
@@ -86,6 +126,11 @@ pub struct RetrievalSource {
     pub seed_tmdb_id: Option<i64>,
     #[serde(default)]
     pub seed_rating: Option<f32>,
+    /// Retrieval provenance only (e.g. embedding cosine). Not Taste fit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub similarity: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub neighbor_rank: Option<u32>,
 }
 
 impl RetrievalSource {
@@ -95,12 +140,26 @@ impl RetrievalSource {
             label: label.into(),
             seed_tmdb_id,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }
     }
 
     pub fn with_rating(mut self, rating: Option<f32>) -> Self {
         self.seed_rating = rating;
         self
+    }
+
+    pub fn with_similarity(mut self, similarity: f32, neighbor_rank: u32) -> Self {
+        self.similarity = Some(similarity);
+        self.neighbor_rank = Some(neighbor_rank);
+        self
+    }
+}
+
+impl Default for RetrievalSource {
+    fn default() -> Self {
+        Self::new(RetrievalKind::Related, "", None)
     }
 }
 
@@ -121,15 +180,23 @@ pub struct RetrievalResult {
 }
 
 const POOL_CAP: usize = 1000;
+/// Soft per-family floor inside the examination/hydration tranche so one
+/// high-volume generator (usually Related) cannot consume the entire budget.
+const FAMILY_EXAM_BUDGET: usize = 180;
 const PER_SEED_GUARANTEE: usize = 2;
 const PER_PERSON_GUARANTEE: usize = 2;
-const RECS_PER_SEED: usize = 8;
-const SIMILAR_PER_SEED: usize = 3;
-const SIMILAR_SEED_CAP: usize = 40;
+const PER_COLLECTION_GUARANTEE: usize = 2;
+/// Take the full stored TMDB recommendation page (see RELATED_LIST_STORE).
+const RECS_PER_SEED: usize = crate::catalog::tmdb::RELATED_LIST_STORE;
+const SIMILAR_PER_SEED: usize = 12;
+const SIMILAR_SEED_CAP: usize = 60;
 const FILMOGRAPHY_PER_PERSON: usize = 12;
 const ACTOR_FILMOGRAPHY_CAP: usize = 4;
 const COMPOSER_FILMOGRAPHY_CAP: usize = 4;
-const SEED_HYDRATE_CAP: usize = 40;
+const COLLECTION_PER_SEED: usize = 16;
+pub const SEED_HYDRATE_CAP: usize = 80;
+/// Practical uncapped oracle for Milestone A2 (still sorted; not truncated).
+pub const POOL_CAP_ORACLE: usize = usize::MAX / 4;
 
 #[derive(Debug, Clone)]
 pub struct Candidate {
@@ -201,6 +268,8 @@ pub fn load_films(db: &Database) -> Result<Vec<FilmRecord>, String> {
               m.crew_json,
               m.keywords_json,
               m.similar_json,
+              m.collection_name,
+              m.collection_json,
               m.runtime,
               COALESCE(m.poster_override_url, m.poster_path, smr.cached_poster_url),
               m.vote_count,
@@ -223,8 +292,12 @@ pub fn load_films(db: &Database) -> Result<Vec<FilmRecord>, String> {
             let cast_json: Option<String> = row.get(12)?;
             let crew_json: Option<String> = row.get(13)?;
             let (recommendations, similar) = parse_related_lists(row.get::<_, Option<String>>(15)?);
+            let collection_name = row
+                .get::<_, Option<String>>(16)?
+                .filter(|s| !s.trim().is_empty());
+            let collection = parse_item_list_raw(row.get::<_, Option<String>>(17)?);
             let review = row
-                .get::<_, Option<String>>(19)?
+                .get::<_, Option<String>>(21)?
                 .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
                 .and_then(|identity| {
                     identity
@@ -253,9 +326,11 @@ pub fn load_films(db: &Database) -> Result<Vec<FilmRecord>, String> {
                 keywords: parse_keywords(row.get::<_, Option<String>>(14)?),
                 recommendations,
                 similar,
-                runtime: row.get(16)?,
-                poster: poster_url(row.get(17)?),
-                vote_count: row.get(18)?,
+                collection_name,
+                collection,
+                runtime: row.get(18)?,
+                poster: poster_url(row.get(19)?),
+                vote_count: row.get(20)?,
                 review,
                 signal: None,
                 age_years: None,
@@ -320,7 +395,16 @@ pub fn attach_signals(films: &mut [FilmRecord]) {
 }
 
 fn needs_related_hydrate(film: &FilmRecord) -> bool {
-    film.tmdb_id.is_some() && eligible_positive_like(film) && !has_usable_related(film)
+    if film.tmdb_id.is_none() || !eligible_positive_like(film) {
+        return false;
+    }
+    if !has_usable_related(film) {
+        return true;
+    }
+    // Legacy catalog writes stopped at 12. Refresh those so retrieval can use
+    // the deeper RELATED_LIST_STORE neighbors.
+    let legacy = crate::catalog::tmdb::RELATED_LIST_LEGACY_CAP;
+    film.recommendations.len() == legacy || film.similar.len() == legacy
 }
 
 pub fn enrich_eligible_seeds(
@@ -334,7 +418,12 @@ pub fn enrich_eligible_seeds(
         .iter()
         .enumerate()
         .filter(|(_, f)| eligible_positive_like(f) && f.tmdb_id.is_some())
-        .filter(|(_, f)| force || needs_related_hydrate(f) || needs_catalog_hydrate(f))
+        .filter(|(_, f)| {
+            force
+                || needs_related_hydrate(f)
+                || needs_catalog_hydrate(f)
+                || needs_collection_enrich(db, f)
+        })
         .map(|(i, _)| i)
         .collect();
     idxs.sort_by(|&a, &b| {
@@ -371,6 +460,35 @@ fn needs_catalog_hydrate(film: &FilmRecord) -> bool {
         .iter()
         .any(|c| c.id.is_some() && c.job != "Actor");
     !has_crew_ids || film.keywords.is_empty()
+}
+
+/// Seeds with unknown collection metadata (never written) should be enriched
+/// before collection retrieval. Empty `[]` after enrich means "no collection".
+fn needs_collection_enrich(db: &Database, film: &FilmRecord) -> bool {
+    eligible_positive_like(film)
+        && film.collection.is_empty()
+        && film.collection_name.is_none()
+        && film
+            .tmdb_id
+            .map(|id| collection_json_unknown(db, id))
+            .unwrap_or(false)
+}
+
+fn collection_json_unknown(db: &Database, tmdb_id: i64) -> bool {
+    db.conn()
+        .query_row(
+            "SELECT CASE
+                WHEN collection_json IS NULL THEN 1
+                ELSE 0
+             END
+             FROM movies WHERE tmdb_id = ?1 LIMIT 1",
+            params![tmdb_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok()
+        .map(|v| v == 1)
+        // No movies row yet — treat as unknown so refresh can create it.
+        .unwrap_or(true)
 }
 
 pub fn enrich_rated_library(
@@ -418,7 +536,8 @@ fn reload_catalog_fields(db: &Database, film: &mut FilmRecord) -> Result<(), Str
         return Ok(());
     };
     let row = db.conn().query_row(
-        "SELECT genres_json, credits_json, cast_json, crew_json, keywords_json, similar_json, runtime, vote_count, poster_path
+        "SELECT genres_json, credits_json, cast_json, crew_json, keywords_json, similar_json,
+                collection_name, collection_json, runtime, vote_count, poster_path
          FROM movies WHERE tmdb_id = ?1 LIMIT 1",
         params![tid],
         |row| {
@@ -429,13 +548,27 @@ fn reload_catalog_fields(db: &Database, film: &mut FilmRecord) -> Result<(), Str
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<i32>>(6)?,
-                row.get::<_, Option<i64>>(7)?,
-                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<i32>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
+                row.get::<_, Option<String>>(10)?,
             ))
         },
     );
-    let Ok((genres, credits, cast, crew, keywords, similar, runtime, vote_count, poster)) = row
+    let Ok((
+        genres,
+        credits,
+        cast,
+        crew,
+        keywords,
+        similar,
+        collection_name,
+        collection_json,
+        runtime,
+        vote_count,
+        poster,
+    )) = row
     else {
         return Ok(());
     };
@@ -445,6 +578,8 @@ fn reload_catalog_fields(db: &Database, film: &mut FilmRecord) -> Result<(), Str
     let (recommendations, similar_list) = parse_related_lists(similar);
     film.recommendations = recommendations;
     film.similar = similar_list;
+    film.collection_name = collection_name.filter(|s| !s.trim().is_empty());
+    film.collection = parse_item_list_raw(collection_json);
     if film.runtime.is_none() {
         film.runtime = runtime;
     }
@@ -479,6 +614,49 @@ pub fn retrieve_with_coverage(
     seen: &HashSet<String>,
     force_refresh: bool,
 ) -> Result<RetrievalResult, String> {
+    retrieve_with_pool_cap(db, films, profile, seen, force_refresh, POOL_CAP)
+}
+
+/// Same generators as production retrieval; only the examination/pool cap changes.
+pub fn retrieve_with_pool_cap(
+    db: &Database,
+    films: &[FilmRecord],
+    profile: &FeatureProfile,
+    seen: &HashSet<String>,
+    force_refresh: bool,
+    pool_cap: usize,
+) -> Result<RetrievalResult, String> {
+    let pool = build_retrieval_pool(db, films, profile, seen, force_refresh)?;
+    let candidates_with_catalog = pool
+        .by_key
+        .values()
+        .filter(|c| candidate_has_catalog(c))
+        .count();
+    let mut coverage = pool.coverage;
+    coverage.candidates_with_catalog = candidates_with_catalog;
+    let out = select_fair_pool(pool.by_key, pool_cap);
+    let mut out = out;
+    hydrate_local_metadata(db, &mut out)?;
+    Ok(RetrievalResult {
+        candidates: out,
+        coverage,
+    })
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RetrievalPool {
+    pub by_key: HashMap<String, Candidate>,
+    pub coverage: SeedCoverage,
+}
+
+/// Build the full deduped candidate map before examination-cap selection.
+pub fn build_retrieval_pool(
+    db: &Database,
+    films: &[FilmRecord],
+    profile: &FeatureProfile,
+    seen: &HashSet<String>,
+    force_refresh: bool,
+) -> Result<RetrievalPool, String> {
     let mut by_key: HashMap<String, Candidate> = HashMap::new();
     let mut seeds: Vec<&FilmRecord> = films.iter().filter(|f| eligible_positive_like(f)).collect();
     seeds.sort_by(|a, b| {
@@ -521,6 +699,23 @@ pub fn retrieve_with_coverage(
                 item,
                 RetrievalKind::RelatedSimilar,
                 format!("similar to {}", seed.title),
+            );
+        }
+    }
+
+    for seed in seeds.iter().filter(|s| !s.collection.is_empty()) {
+        let label = seed
+            .collection_name
+            .as_deref()
+            .unwrap_or("collection");
+        for item in seed.collection.iter().take(COLLECTION_PER_SEED) {
+            push_related(
+                &mut by_key,
+                seen,
+                seed,
+                item,
+                RetrievalKind::Collection,
+                format!("same collection as {} ({label})", seed.title),
             );
         }
     }
@@ -597,6 +792,8 @@ pub fn retrieve_with_coverage(
                     label: "watchlist".into(),
                     seed_tmdb_id: None,
                     seed_rating: None,
+                    similarity: None,
+                    neighbor_rank: None,
                 }],
                 friend_affinity: 0.0,
                 tmdb_related: 0.0,
@@ -610,18 +807,21 @@ pub fn retrieve_with_coverage(
         upsert_candidate(&mut by_key, c);
     }
 
-    let mut out = select_fair_pool(by_key, POOL_CAP);
-    hydrate_local_metadata(db, &mut out)?;
+    let semantic_hits =
+        crate::taste::semantic::retrieve_semantic_candidates(db, films, seen);
+    for c in semantic_hits {
+        upsert_candidate(&mut by_key, c);
+    }
+
     let seeds_with_catalog = seeds.iter().filter(|s| film_has_catalog(s)).count();
-    let candidates_with_catalog = out.iter().filter(|c| candidate_has_catalog(c)).count();
-    Ok(RetrievalResult {
-        candidates: out,
+    Ok(RetrievalPool {
+        by_key,
         coverage: SeedCoverage {
             eligible_seeds,
             seeds_with_usable_related,
             seeds_refreshed: 0,
             seeds_with_catalog,
-            candidates_with_catalog,
+            candidates_with_catalog: 0,
         },
     })
 }
@@ -746,43 +946,151 @@ fn candidate_priority(c: &Candidate) -> i32 {
     if c.watchlist {
         return 500;
     }
+    // Soft examination priority by generator *family*, not edge multiplicity.
+    // Five TMDB recommendation edges from the same related graph must not outrank
+    // one filmography + one collection hit solely by counting edges.
+    let families: HashSet<GeneratorFamily> = c
+        .sources
+        .iter()
+        .map(|s| s.kind.generator_family())
+        .collect();
     let mut p = 0;
-    for s in &c.sources {
-        p += match s.kind {
-            RetrievalKind::Friend => 40,
-            RetrievalKind::RelatedRecommendations | RetrievalKind::Related => 10,
-            RetrievalKind::RelatedSimilar => 3,
-            RetrievalKind::Filmography => 1,
-            RetrievalKind::Watchlist => 50,
-            RetrievalKind::Discovery | RetrievalKind::Exploration => 2,
+    for family in &families {
+        p += match family {
+            GeneratorFamily::Friend => 40,
+            GeneratorFamily::Watchlist => 50,
+            GeneratorFamily::Related => 10,
+            GeneratorFamily::Filmography => 8,
+            GeneratorFamily::Collection => 8,
+            GeneratorFamily::SemanticFilmLocal => 12,
+            GeneratorFamily::SemanticProfile => 11,
+            GeneratorFamily::Discovery | GeneratorFamily::Exploration => 2,
         };
     }
-    p + (c.sources.len() as i32)
+    p + families.len() as i32
 }
 
 fn pool_order(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
     candidate_priority(a)
         .cmp(&candidate_priority(b))
-        .then(a.sources.len().cmp(&b.sources.len()))
+        .then(
+            a.sources
+                .iter()
+                .map(|s| s.kind.generator_family())
+                .collect::<HashSet<_>>()
+                .len()
+                .cmp(
+                    &b.sources
+                        .iter()
+                        .map(|s| s.kind.generator_family())
+                        .collect::<HashSet<_>>()
+                        .len(),
+                ),
+        )
         .then(a.tmdb_id.unwrap_or(0).cmp(&b.tmdb_id.unwrap_or(0)))
         .then(a.title.cmp(&b.title))
 }
 
-fn select_fair_pool(map: HashMap<String, Candidate>, cap: usize) -> Vec<Candidate> {
-    if map.len() <= cap {
-        let mut out: Vec<_> = map.into_values().collect();
-        out.sort_by(|a, b| pool_order(b, a));
-        return out;
+/// Examination order *within* one generator family.
+/// Uses that family's retrieval provenance only — never cross-family edge count —
+/// so a pure SemanticProfile neighbor is not buried under Related+Filmography rows
+/// that happen to also carry a weak semantic edge.
+///
+/// E1.1 consolidation (SemanticFilmLocal / SemanticProfile): prioritize best native
+/// neighbor rank, then bounded support from distinct seeds/queries — not raw hit count.
+fn family_exam_order(
+    map: &HashMap<String, Candidate>,
+    family: GeneratorFamily,
+    a: &str,
+    b: &str,
+) -> std::cmp::Ordering {
+    let ca = &map[a];
+    let cb = &map[b];
+    let consolidate = crate::taste::exam_policy::semantic_consolidate()
+        && matches!(
+            family,
+            GeneratorFamily::SemanticFilmLocal | GeneratorFamily::SemanticProfile
+        );
+    let score = |c: &Candidate| -> (u32, i32, OrderedFloat) {
+        let mut rank = u32::MAX;
+        let mut sim = f32::NEG_INFINITY;
+        let mut seed_ids: HashSet<i64> = HashSet::new();
+        let mut query_labels: HashSet<String> = HashSet::new();
+        for s in &c.sources {
+            if s.kind.generator_family() != family {
+                continue;
+            }
+            if let Some(r) = s.neighbor_rank {
+                rank = rank.min(r);
+            }
+            if let Some(v) = s.similarity {
+                if v > sim {
+                    sim = v;
+                }
+            }
+            if let Some(sid) = s.seed_tmdb_id {
+                seed_ids.insert(sid);
+            } else if !s.label.is_empty() {
+                query_labels.insert(s.label.clone());
+            }
+        }
+        // Bound multi-seed support so 8 overlapping FilmLocal hits ≠ 8× priority.
+        let support = if consolidate {
+            seed_ids.len().max(query_labels.len()).min(3) as i32
+        } else {
+            0
+        };
+        (rank, -support, OrderedFloat(sim))
+    };
+    let (ra, sa, sim_a) = score(ca);
+    let (rb, sb, sim_b) = score(cb);
+    // Lower neighbor_rank first; higher bounded support; higher similarity; stable id.
+    ra.cmp(&rb)
+        .then(sa.cmp(&sb))
+        .then(sim_b.cmp(&sim_a))
+        .then(ca.tmdb_id.unwrap_or(0).cmp(&cb.tmdb_id.unwrap_or(0)))
+        .then(ca.title.cmp(&cb.title))
+}
+
+/// Tiny wrapper so we can Ord-compare f32 similarity without pulling in ordered-float.
+#[derive(Copy, Clone, PartialEq)]
+struct OrderedFloat(f32);
+impl Eq for OrderedFloat {}
+impl PartialOrd for OrderedFloat {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for OrderedFloat {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+#[derive(Copy, Clone)]
+enum CapRespect {
+    None,
+    Soft,
+    Hard,
+}
+
+pub fn select_fair_pool(map: HashMap<String, Candidate>, cap: usize) -> Vec<Candidate> {
+    if map.is_empty() || cap == 0 {
+        return Vec::new();
     }
 
     let mut by_seed: HashMap<i64, Vec<String>> = HashMap::new();
     let mut by_person: HashMap<String, Vec<String>> = HashMap::new();
+    let mut by_collection: HashMap<String, Vec<String>> = HashMap::new();
+    let mut by_family: HashMap<GeneratorFamily, Vec<String>> = HashMap::new();
     let mut must: Vec<String> = Vec::new();
     for (key, c) in &map {
         if c.watchlist || c.sources.iter().any(|s| s.kind == RetrievalKind::Friend) {
             must.push(key.clone());
         }
         for s in &c.sources {
+            let family = s.kind.generator_family();
+            by_family.entry(family).or_default().push(key.clone());
             if s.kind.is_related() {
                 if let Some(seed) = s.seed_tmdb_id {
                     by_seed.entry(seed).or_default().push(key.clone());
@@ -790,6 +1098,12 @@ fn select_fair_pool(map: HashMap<String, Candidate>, cap: usize) -> Vec<Candidat
             }
             if s.kind == RetrievalKind::Filmography {
                 by_person
+                    .entry(s.label.clone())
+                    .or_default()
+                    .push(key.clone());
+            }
+            if s.kind == RetrievalKind::Collection {
+                by_collection
                     .entry(s.label.clone())
                     .or_default()
                     .push(key.clone());
@@ -806,30 +1120,156 @@ fn select_fair_pool(map: HashMap<String, Candidate>, cap: usize) -> Vec<Candidat
         keys.dedup();
         keys.sort_by(|a, b| pool_order(&map[b], &map[a]));
     }
+    for keys in by_collection.values_mut() {
+        keys.sort();
+        keys.dedup();
+        keys.sort_by(|a, b| pool_order(&map[b], &map[a]));
+    }
+    // Family lists use family-native retrieval quality, not multi-edge pool_order.
+    for (family, keys) in by_family.iter_mut() {
+        keys.sort();
+        keys.dedup();
+        let fam = *family;
+        keys.sort_by(|a, b| family_exam_order(&map, fam, a, b));
+    }
 
     let mut selected: Vec<String> = Vec::new();
     let mut seen_sel = HashSet::new();
-    let mut push_key = |key: String, selected: &mut Vec<String>| {
+    let mut family_taken: HashMap<GeneratorFamily, usize> = HashMap::new();
+
+    let primary_family = |key: &str| -> Option<GeneratorFamily> {
+        let c = map.get(key)?;
+        // Prefer semantic families when present so soft caps protect FilmLocal/Profile
+        // separately rather than attributing a multi-edge row only to Related.
+        let mut best: Option<(i32, GeneratorFamily)> = None;
+        for s in &c.sources {
+            let fam = s.kind.generator_family();
+            let prio = match fam {
+                GeneratorFamily::SemanticFilmLocal => 5,
+                GeneratorFamily::SemanticProfile => 4,
+                GeneratorFamily::Collection => 3,
+                GeneratorFamily::Filmography => 2,
+                GeneratorFamily::Related => 1,
+                _ => 0,
+            };
+            best = match best {
+                Some((bp, _)) if bp >= prio => best,
+                _ => Some((prio, fam)),
+            };
+        }
+        best.map(|(_, f)| f)
+    };
+
+    let under_soft_cap = |key: &str, family_taken: &HashMap<GeneratorFamily, usize>| -> bool {
+        let Some(fam) = primary_family(key) else {
+            return true;
+        };
+        let Some(limit) = crate::taste::exam_policy::family_soft_cap(fam, cap) else {
+            return true;
+        };
+        family_taken.get(&fam).copied().unwrap_or(0) < limit
+    };
+
+    // Spill may exceed soft caps slightly, but never let one family eat the whole cut.
+    let under_hard_cap = |key: &str, family_taken: &HashMap<GeneratorFamily, usize>| -> bool {
+        let Some(fam) = primary_family(key) else {
+            return true;
+        };
+        let Some(soft) = crate::taste::exam_policy::family_soft_cap(fam, cap) else {
+            return true;
+        };
+        let hard = soft + soft / 2; // 1.5× soft
+        family_taken.get(&fam).copied().unwrap_or(0) < hard
+    };
+
+    let mut push_key = |key: String,
+                        selected: &mut Vec<String>,
+                        family_taken: &mut HashMap<GeneratorFamily, usize>,
+                        respect_cap: CapRespect| {
         if selected.len() >= cap {
             return;
         }
+        let ok = match respect_cap {
+            CapRespect::None => true,
+            CapRespect::Soft => under_soft_cap(&key, family_taken),
+            CapRespect::Hard => under_hard_cap(&key, family_taken),
+        };
+        if !ok {
+            return;
+        }
         if seen_sel.insert(key.clone()) {
+            if let Some(fam) = primary_family(&key) {
+                *family_taken.entry(fam).or_insert(0) += 1;
+            }
             selected.push(key);
         }
     };
 
     must.sort();
-    for key in must {
-        push_key(key, &mut selected);
+    // Watchlist/friend are intentional, but they must not consume the entire
+    // discovery examination window (@250). Cap the forced prefix; overflow
+    // still enters later via family fill / rest.
+    let must_prefix = must.len().min(32).min(cap / 8);
+    for key in must.iter().take(must_prefix) {
+        // Must rows bypass soft caps.
+        push_key(key.clone(), &mut selected, &mut family_taken, CapRespect::None);
     }
 
+    // Round-robin FIRST so Related/Filmography seed guarantees cannot consume
+    // the entire @250 examination window before semantic ever appears.
+    let family_order = [
+        GeneratorFamily::SemanticFilmLocal,
+        GeneratorFamily::SemanticProfile,
+        GeneratorFamily::Collection,
+        GeneratorFamily::Filmography,
+        GeneratorFamily::Related,
+        GeneratorFamily::Discovery,
+        GeneratorFamily::Exploration,
+        GeneratorFamily::Friend,
+        GeneratorFamily::Watchlist,
+    ];
+    let early_cap = cap.min(400);
+    let mut cursors: HashMap<GeneratorFamily, usize> = HashMap::new();
+    while selected.len() < early_cap {
+        let mut progressed = false;
+        for family in family_order {
+            if selected.len() >= early_cap {
+                break;
+            }
+            let Some(keys) = by_family.get(&family) else {
+                continue;
+            };
+            let cursor = cursors.entry(family).or_insert(0);
+            while *cursor < keys.len() {
+                let key = keys[*cursor].clone();
+                *cursor += 1;
+                let before = selected.len();
+                push_key(key, &mut selected, &mut family_taken, CapRespect::Soft);
+                if selected.len() > before {
+                    progressed = true;
+                    break;
+                }
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+
+    // Remaining must rows after the early balanced tranche.
+    for key in must.into_iter().skip(must_prefix) {
+        push_key(key, &mut selected, &mut family_taken, CapRespect::None);
+    }
+
+    // Diversity guarantees fill remaining slots after the early balanced tranche.
+    // Graph guarantees may slightly exceed soft caps — intentional floors.
     let mut seed_ids: Vec<i64> = by_seed.keys().copied().collect();
     seed_ids.sort();
     for pass in 0..PER_SEED_GUARANTEE {
         for sid in &seed_ids {
             if let Some(keys) = by_seed.get(sid) {
                 if let Some(key) = keys.get(pass) {
-                    push_key(key.clone(), &mut selected);
+                    push_key(key.clone(), &mut selected, &mut family_taken, CapRespect::None);
                 }
             }
         }
@@ -840,22 +1280,166 @@ fn select_fair_pool(map: HashMap<String, Candidate>, cap: usize) -> Vec<Candidat
         for name in &people {
             if let Some(keys) = by_person.get(name) {
                 if let Some(key) = keys.get(pass) {
-                    push_key(key.clone(), &mut selected);
+                    push_key(key.clone(), &mut selected, &mut family_taken, CapRespect::None);
+                }
+            }
+        }
+    }
+    let mut collections: Vec<String> = by_collection.keys().cloned().collect();
+    collections.sort();
+    for pass in 0..PER_COLLECTION_GUARANTEE {
+        for name in &collections {
+            if let Some(keys) = by_collection.get(name) {
+                if let Some(key) = keys.get(pass) {
+                    push_key(key.clone(), &mut selected, &mut family_taken, CapRespect::None);
                 }
             }
         }
     }
 
-    let mut rest: Vec<String> = map.keys().cloned().collect();
-    rest.sort_by(|a, b| pool_order(&map[b], &map[a]).then(a.cmp(b)));
-    for key in rest {
-        push_key(key, &mut selected);
+    // Soft additional budget per family before volume fill.
+    for family in family_order {
+        let Some(keys) = by_family.get(&family) else {
+            continue;
+        };
+        let mut taken = 0usize;
+        for key in keys {
+            if selected.len() >= cap || taken >= FAMILY_EXAM_BUDGET {
+                break;
+            }
+            let before = selected.len();
+            push_key(key.clone(), &mut selected, &mut family_taken, CapRespect::Soft);
+            if selected.len() > before {
+                taken += 1;
+            }
+        }
+    }
+
+    // Volume fill: continue family round-robin under soft caps (not multi-edge dump).
+    if crate::taste::exam_policy::family_soft_caps_enabled() {
+        let mut fill_cursors: HashMap<GeneratorFamily, usize> = HashMap::new();
+        loop {
+            if selected.len() >= cap {
+                break;
+            }
+            let mut progressed = false;
+            for family in family_order {
+                if selected.len() >= cap {
+                    break;
+                }
+                let Some(keys) = by_family.get(&family) else {
+                    continue;
+                };
+                let cursor = fill_cursors.entry(family).or_insert(0);
+                while *cursor < keys.len() {
+                    let key = keys[*cursor].clone();
+                    *cursor += 1;
+                    let before = selected.len();
+                    push_key(key, &mut selected, &mut family_taken, CapRespect::Soft);
+                    if selected.len() > before {
+                        progressed = true;
+                        break;
+                    }
+                }
+            }
+            if !progressed {
+                break;
+            }
+        }
+        // Spill: unused capacity may exceed soft caps up to 1.5× hard ceiling.
+        let mut spill_cursors: HashMap<GeneratorFamily, usize> = HashMap::new();
+        loop {
+            if selected.len() >= cap {
+                break;
+            }
+            let mut progressed = false;
+            for family in family_order {
+                if selected.len() >= cap {
+                    break;
+                }
+                let Some(keys) = by_family.get(&family) else {
+                    continue;
+                };
+                let cursor = spill_cursors.entry(family).or_insert(0);
+                while *cursor < keys.len() {
+                    let key = keys[*cursor].clone();
+                    *cursor += 1;
+                    let before = selected.len();
+                    push_key(key, &mut selected, &mut family_taken, CapRespect::Hard);
+                    if selected.len() > before {
+                        progressed = true;
+                        break;
+                    }
+                }
+            }
+            if !progressed {
+                break;
+            }
+        }
+        // Final drip: remaining slots without family flood (hard still applies).
+        let mut rest: Vec<String> = map.keys().cloned().collect();
+        rest.sort_by(|a, b| pool_order(&map[b], &map[a]).then(a.cmp(b)));
+        for key in rest {
+            push_key(key, &mut selected, &mut family_taken, CapRespect::Hard);
+        }
+    } else {
+        let mut rest: Vec<String> = map.keys().cloned().collect();
+        rest.sort_by(|a, b| pool_order(&map[b], &map[a]).then(a.cmp(b)));
+        for key in rest {
+            push_key(key, &mut selected, &mut family_taken, CapRespect::None);
+        }
     }
 
     selected
         .into_iter()
         .filter_map(|k| map.get(&k).cloned())
         .collect()
+}
+
+/// Filter a candidate map to sources belonging to `family`, dropping empty rows.
+pub fn filter_pool_by_family(
+    map: &HashMap<String, Candidate>,
+    family: GeneratorFamily,
+) -> HashMap<String, Candidate> {
+    let mut out = HashMap::new();
+    for (key, c) in map {
+        let sources: Vec<_> = c
+            .sources
+            .iter()
+            .filter(|s| s.kind.generator_family() == family)
+            .cloned()
+            .collect();
+        if sources.is_empty() {
+            continue;
+        }
+        let mut clone = c.clone();
+        clone.sources = sources;
+        out.insert(key.clone(), clone);
+    }
+    out
+}
+
+/// Remove one generator family from every candidate; drop rows with no sources left.
+pub fn pool_without_family(
+    map: &HashMap<String, Candidate>,
+    family: GeneratorFamily,
+) -> HashMap<String, Candidate> {
+    let mut out = HashMap::new();
+    for (key, c) in map {
+        let sources: Vec<_> = c
+            .sources
+            .iter()
+            .filter(|s| s.kind.generator_family() != family)
+            .cloned()
+            .collect();
+        if sources.is_empty() {
+            continue;
+        }
+        let mut clone = c.clone();
+        clone.sources = sources;
+        out.insert(key.clone(), clone);
+    }
+    out
 }
 
 pub(crate) fn keep_person_credit(job: &str, family: FeatureFamily) -> bool {
@@ -1032,6 +1616,8 @@ fn friend_candidates(
                 label: format!("loved by {} friend(s)", contribs.len()),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity,
             tmdb_related: 0.0,
@@ -1237,7 +1823,7 @@ fn parse_credits(credits: Option<&str>, cast: Option<&str>, crew: Option<&str>) 
                 for c in arr {
                     if let Some(name) = c["name"].as_str() {
                         out.push(Credit {
-                            id: c["id"].as_i64(),
+                            id: c["tmdbId"].as_i64().or_else(|| c["id"].as_i64()),
                             name: name.to_string(),
                             job: c["job"].as_str().unwrap_or("").to_string(),
                         });
@@ -1248,7 +1834,7 @@ fn parse_credits(credits: Option<&str>, cast: Option<&str>, crew: Option<&str>) 
                 for c in arr.iter().take(8) {
                     if let Some(name) = c["name"].as_str() {
                         out.push(Credit {
-                            id: c["id"].as_i64(),
+                            id: c["tmdbId"].as_i64().or_else(|| c["id"].as_i64()),
                             name: name.to_string(),
                             job: "Actor".into(),
                         });
@@ -1289,6 +1875,16 @@ fn parse_credits(credits: Option<&str>, cast: Option<&str>, crew: Option<&str>) 
         }
     }
     out
+}
+
+fn parse_item_list_raw(raw: Option<String>) -> Vec<LibraryItem> {
+    let Some(raw) = raw.filter(|s| !s.trim().is_empty()) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Vec::new();
+    };
+    parse_item_list(Some(&v))
 }
 
 fn parse_related_lists(raw: Option<String>) -> (Vec<LibraryItem>, Vec<LibraryItem>) {
@@ -1343,6 +1939,90 @@ mod tests {
     use rusqlite::params;
 
     #[test]
+    fn credits_preserve_catalog_and_raw_tmdb_person_ids() {
+        for field in ["tmdbId", "id"] {
+            let raw = format!(r#"{{"crew":[{{"{field}":1144092,"name":"Matt Johnson","job":"Writer"}}],"cast":[{{"{field}":42,"name":"Actor"}}]}}"#);
+            let credits = parse_credits(Some(&raw), None, None);
+            assert_eq!(credits[0].id, Some(1144092));
+            assert_eq!(credits[1].id, Some(42));
+            assert_eq!(credits[1].job, "Actor");
+        }
+        let credits = parse_credits(Some(r#"{"crew":[{"tmdbId":1144092,"id":999,"name":"Matt Johnson","job":"Writer"}]}"#), None, None);
+        assert_eq!(credits[0].id, Some(1144092));
+    }
+
+    #[test]
+    fn credits_keep_legacy_name_only_fallback() {
+        let credits = parse_credits(None, Some(r#"["Actor as Character"]"#), Some(r#"["Matt Johnson (Writer)"]"#));
+        assert_eq!(credits.len(), 2);
+        assert!(credits.iter().all(|credit| credit.id.is_none()));
+        assert_eq!(credits[0].name, "Matt Johnson");
+        assert_eq!(credits[1].name, "Actor");
+        let structured = parse_credits(Some(r#"{"crew":[{"name":"Matt Johnson","job":"Writer"}]}"#), None, None);
+        assert_eq!(structured[0].id, None);
+    }
+
+    fn parsed_writer_profile() -> FeatureProfile {
+        let credits = parse_credits(Some(r#"{"crew":[{"tmdbId":1144092,"name":"Matt Johnson","job":"Writer"}]}"#), None, None);
+        let ratings = rating_profile(&[4.5; 8]).unwrap();
+        let mut observations = Vec::new();
+        for (id, title) in [(1, "Tony"), (2, "Nirvanna the Band the Show the Movie")] {
+            observations.extend(crate::taste::features::observations_from_film(
+                title, 4.5, Some(id),
+                &interaction_signal(4.5, &ratings, Some(0.5), 1, false),
+                Some(0.5), &[], &credits, &[], Some(2026), Some(100),
+            ));
+        }
+        crate::taste::features::build_profile(&observations)
+    }
+
+    #[test]
+    fn same_name_writers_do_not_share_affinity_or_legacy_feedback() {
+        let mut profile = parsed_writer_profile();
+        crate::taste::feedback::apply_feedback_adjustments(
+            &mut profile, &HashMap::from([("Writer:matt johnson".into(), -0.15)]),
+        );
+        assert!(profile.affinities.iter().all(|a| a.feedback_adjustment == 0.0));
+        let raw = r#"{"crew":[{"tmdbId":66824,"name":"Matt Johnson","job":"Writer"}]}"#;
+        let mut candidate = Candidate {
+            tmdb_id: Some(999), title: "Afterburn".into(), year: Some(2025), poster: None,
+            genres: vec![], credits: parse_credits(Some(raw), None, None), keywords: vec![],
+            runtime: Some(100), vote_count: Some(100), watchlist: false, sources: vec![],
+            friend_affinity: 0.0, tmdb_related: 0.0, media_kind: MediaKind::Movie,
+        };
+        let unrelated = crate::taste::score::score_candidate(&profile, &candidate);
+        assert!(unrelated.matched_features.iter().all(|f| f.name != "Matt Johnson"));
+        candidate.credits[0].id = Some(1144092);
+        let actual_writer = crate::taste::score::score_candidate(&profile, &candidate);
+        assert!(actual_writer.matched_features.iter().any(|f| f.name == "Matt Johnson"));
+        assert!(actual_writer.score.content > unrelated.score.content);
+    }
+
+    #[test]
+    fn parsed_person_id_restores_cached_filmography_retrieval() {
+        let db = Database::in_memory().unwrap();
+        let credits = serde_json::to_string(&crate::catalog::tmdb::PersonCreditsCache {
+            version: crate::catalog::tmdb::PERSON_CREDITS_CACHE_VERSION,
+            credits: vec![crate::catalog::tmdb::PersonCredit {
+                tmdb_id: 101,
+                title: "BlackBerry".into(),
+                year: Some(2023),
+                job: "Writer".into(),
+                order: None,
+            }],
+        })
+        .unwrap();
+        db.conn().execute(
+            "INSERT INTO person_credits(person_id, credits_json, fetched_at) VALUES (?1, ?2, datetime('now'))",
+            params![1144092, credits],
+        ).unwrap();
+        let candidates = retrieve(&db, &[], &parsed_writer_profile(), &HashSet::new(), false).unwrap();
+        let film = candidates.iter().find(|c| c.tmdb_id == Some(101)).expect("cached writer filmography must be retrieved");
+        assert_eq!(film.credits[0].id, Some(1144092));
+        assert!(film.sources.iter().any(|s| s.kind == RetrievalKind::Filmography));
+    }
+
+    #[test]
     fn friend_overlap_gate() {
         assert_eq!(
             friend_similarity(&[(5.0, 5.0), (4.0, 4.0)], &[5.0, 4.0]),
@@ -1393,6 +2073,8 @@ mod tests {
             keywords: vec![],
             recommendations: vec![],
             similar: vec![],
+            collection_name: None,
+            collection: vec![],
             runtime: None,
             poster: None,
             vote_count: None,
@@ -1473,6 +2155,8 @@ mod tests {
                 None,
             )],
             similar: vec![],
+            collection_name: None,
+            collection: vec![],
             runtime: None,
             poster: None,
             vote_count: None,
@@ -1937,6 +2621,8 @@ mod tests {
                 label: "recommended from X".into(),
                 seed_tmdb_id: Some(9),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 1.0,
@@ -1989,6 +2675,147 @@ mod tests {
     }
 
     #[test]
+    fn fair_pool_puts_semantic_in_early_examination_window() {
+        let mut map = HashMap::new();
+        // Flood with multi-edge Related+Filmography rows that used to dominate @250.
+        for i in 0..700i64 {
+            let key = format!("rel-{i}");
+            map.insert(
+                key,
+                Candidate {
+                    tmdb_id: Some(50_000 + i),
+                    title: format!("Related flood {i}"),
+                    year: Some(2010),
+                    poster: None,
+                    genres: vec!["Drama".into()],
+                    credits: vec![],
+                    keywords: vec![],
+                    runtime: Some(100),
+                    vote_count: Some(10),
+                    watchlist: false,
+                    sources: vec![
+                        RetrievalSource::new(
+                            RetrievalKind::RelatedRecommendations,
+                            format!("rec {i}"),
+                            Some(i % 80),
+                        ),
+                        RetrievalSource::new(RetrievalKind::Filmography, "Actor", None),
+                    ],
+                    friend_affinity: 0.0,
+                    tmdb_related: 1.0,
+                    media_kind: MediaKind::Movie,
+                },
+            );
+        }
+        for i in 0..40i64 {
+            map.insert(
+                format!("sem-{i}"),
+                Candidate {
+                    tmdb_id: Some(90_000 + i),
+                    title: format!("Semantic hit {i}"),
+                    year: Some(2015),
+                    poster: None,
+                    genres: vec!["Drama".into()],
+                    credits: vec![],
+                    keywords: vec![],
+                    runtime: Some(100),
+                    vote_count: Some(10),
+                    watchlist: false,
+                    sources: vec![RetrievalSource::new(
+                        RetrievalKind::SemanticProfile,
+                        "profile:global",
+                        None,
+                    )
+                    .with_similarity(0.9 - (i as f32) * 0.001, i as u32 + 1)],
+                    friend_affinity: 0.0,
+                    tmdb_related: 0.0,
+                    media_kind: MediaKind::Movie,
+                },
+            );
+        }
+        let selected = select_fair_pool(map, 1000);
+        let early_semantic = selected
+            .iter()
+            .take(250)
+            .filter(|c| {
+                c.sources
+                    .iter()
+                    .any(|s| s.kind == RetrievalKind::SemanticProfile)
+            })
+            .count();
+        assert!(
+            early_semantic >= 20,
+            "semantic profile must occupy early examination slots, found {early_semantic} in @250"
+        );
+    }
+
+    #[test]
+    fn fair_pool_watchlist_does_not_consume_discovery_window() {
+        let mut map = HashMap::new();
+        for i in 0..300i64 {
+            map.insert(
+                format!("wl-{i}"),
+                Candidate {
+                    tmdb_id: Some(1_000 + i),
+                    title: format!("Watch {i}"),
+                    year: Some(2020),
+                    poster: None,
+                    genres: vec![],
+                    credits: vec![],
+                    keywords: vec![],
+                    runtime: Some(100),
+                    vote_count: Some(10),
+                    watchlist: true,
+                    sources: vec![RetrievalSource::new(RetrievalKind::Watchlist, "watchlist", None)],
+                    friend_affinity: 0.0,
+                    tmdb_related: 0.0,
+                    media_kind: MediaKind::Movie,
+                },
+            );
+        }
+        for i in 0..30i64 {
+            map.insert(
+                format!("sem-{i}"),
+                Candidate {
+                    tmdb_id: Some(90_000 + i),
+                    title: format!("Semantic {i}"),
+                    year: Some(2015),
+                    poster: None,
+                    genres: vec![],
+                    credits: vec![],
+                    keywords: vec![],
+                    runtime: Some(100),
+                    vote_count: Some(10),
+                    watchlist: false,
+                    sources: vec![RetrievalSource::new(
+                        RetrievalKind::SemanticFilmLocal,
+                        "seed",
+                        Some(1),
+                    )
+                    .with_similarity(0.85, i as u32 + 1)],
+                    friend_affinity: 0.0,
+                    tmdb_related: 0.0,
+                    media_kind: MediaKind::Movie,
+                },
+            );
+        }
+        let selected = select_fair_pool(map, 1000);
+        let early_sem = selected
+            .iter()
+            .take(250)
+            .filter(|c| {
+                c.sources
+                    .iter()
+                    .any(|s| s.kind == RetrievalKind::SemanticFilmLocal)
+            })
+            .count();
+        assert!(
+            early_sem >= 15,
+            "watchlist prefix must not zero out semantic @250, found {early_sem}"
+        );
+    }
+
+    #[test]
     fn filmography_keeps_only_the_affinity_job() {
         use crate::taste::features::FeatureFamily;
         assert!(keep_person_credit("Director", FeatureFamily::Director));
@@ -2003,5 +2830,125 @@ mod tests {
             FeatureFamily::Cinematographer
         ));
         assert!(!keep_person_credit("Actor", FeatureFamily::Cinematographer));
+    }
+
+    #[test]
+    fn retrieval_takes_neighbors_past_the_old_eight_cap() {
+        use crate::storage::db::Database;
+        use crate::taste::features::build_profile;
+        let db = Database::in_memory().unwrap();
+        let profile = build_profile(&[]);
+        let mut seed = test_seed("Deep seed", 1, vec![]);
+        seed.tmdb_id = Some(1);
+        seed.recommendations = (1..=16)
+            .map(|i| neighbor(10_000 + i, &format!("Rec {i}")))
+            .collect();
+        let out = retrieve(&db, &[seed], &profile, &HashSet::new(), false).unwrap();
+        assert!(
+            out.iter().any(|c| c.tmdb_id == Some(10_009)),
+            "9th recommendation must enter the pool after widening retrieval"
+        );
+        assert!(
+            out.iter().any(|c| c.tmdb_id == Some(10_016)),
+            "deep stored recommendations must not be truncated at 8"
+        );
+    }
+
+    #[test]
+    fn shallow_legacy_related_lists_need_hydrate() {
+        let mut deep = test_seed("Deep", 1, vec![]);
+        deep.recommendations = (1..=20)
+            .map(|i| neighbor(i, &format!("R{i}")))
+            .collect();
+        deep.similar = (1..=20)
+            .map(|i| neighbor(100 + i, &format!("S{i}")))
+            .collect();
+        assert!(!needs_related_hydrate(&deep));
+
+        let mut legacy = test_seed("Legacy", 1, vec![]);
+        legacy.recommendations = (1..=12)
+            .map(|i| neighbor(i, &format!("R{i}")))
+            .collect();
+        legacy.similar = (1..=12)
+            .map(|i| neighbor(100 + i, &format!("S{i}")))
+            .collect();
+        assert!(
+            needs_related_hydrate(&legacy),
+            "exactly-12 legacy lists must refresh to the deeper store"
+        );
+
+        let mut empty = test_seed("Empty", 1, vec![]);
+        empty.recommendations.clear();
+        empty.similar.clear();
+        assert!(needs_related_hydrate(&empty));
+    }
+
+    #[test]
+    fn collection_siblings_enter_pool_with_collection_provenance() {
+        use crate::storage::db::Database;
+        use crate::taste::features::build_profile;
+        let db = Database::in_memory().unwrap();
+        let mut seed = test_seed("Kubo and the Two Strings", 1, vec![]);
+        seed.tmdb_id = Some(407_887);
+        seed.collection_name = Some("Laika Collection".into());
+        seed.collection = vec![LibraryItem::catalog(
+            "tmdb:503314".into(),
+            "Missing Link".into(),
+            Some(2019),
+            None,
+            None,
+            None,
+        )];
+        let profile = build_profile(&[]);
+        let seen = seen_keys(&[]);
+        let result = retrieve_with_coverage(&db, &[seed], &profile, &seen, false).unwrap();
+        let hit = result
+            .candidates
+            .iter()
+            .find(|c| c.tmdb_id == Some(503_314))
+            .expect("collection sibling should be retrieved");
+        assert!(hit
+            .sources
+            .iter()
+            .any(|s| s.kind == RetrievalKind::Collection));
+    }
+
+    #[test]
+    fn examination_priority_uses_generator_families_not_edge_count() {
+        let many_related = Candidate {
+            tmdb_id: Some(1),
+            title: "Many Related".into(),
+            year: Some(2010),
+            poster: None,
+            genres: vec![],
+            credits: vec![],
+            keywords: vec![],
+            runtime: None,
+            vote_count: None,
+            watchlist: false,
+            sources: vec![
+                RetrievalSource::new(RetrievalKind::RelatedRecommendations, "a", Some(1)),
+                RetrievalSource::new(RetrievalKind::RelatedRecommendations, "b", Some(2)),
+                RetrievalSource::new(RetrievalKind::RelatedRecommendations, "c", Some(3)),
+                RetrievalSource::new(RetrievalKind::RelatedSimilar, "d", Some(4)),
+            ],
+            friend_affinity: 0.0,
+            tmdb_related: 1.0,
+            media_kind: MediaKind::Movie,
+        };
+        let craft_and_collection = Candidate {
+            tmdb_id: Some(2),
+            title: "Craft+Collection".into(),
+            year: Some(2011),
+            sources: vec![
+                RetrievalSource::new(RetrievalKind::Filmography, "Pattinson", None),
+                RetrievalSource::new(RetrievalKind::Collection, "same collection", Some(9)),
+            ],
+            ..many_related.clone()
+        };
+        assert!(
+            candidate_priority(&craft_and_collection) > candidate_priority(&many_related),
+            "distinct generator families should outrank repeated related edges"
+        );
     }
 }

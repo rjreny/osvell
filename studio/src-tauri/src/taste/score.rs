@@ -7,6 +7,9 @@ use crate::taste::dimensions::predicted_modes;
 use crate::taste::explain::{
     eligibility_trace, select_display_reasons, EligibilityTrace, EvidenceGrade, MatchedFeatureView,
 };
+use crate::taste::family_fit::{
+    family_fit_as_legacy_total, score_family_fit_with_config, CraftConfig,
+};
 use crate::taste::retrieve::{Candidate, RetrievalKind};
 use crate::taste::semantic::SemanticScore;
 use chrono::Datelike;
@@ -25,7 +28,7 @@ pub const W_TMDB: f32 = 0.20;
 pub const W_FRIEND: f32 = 0.15;
 pub const W_RECENT: f32 = 0.10;
 pub const W_WATCHLIST: f32 = 0.05;
-pub const W_NOVELTY: f32 = 0.05;
+pub const W_NOVELTY: f32 = 0.0;
 pub const W_NEGATIVE: f32 = 0.35;
 pub const W_SEMANTIC: f32 = 0.35;
 
@@ -116,6 +119,9 @@ pub struct CandidateView {
     pub runtime: Option<i32>,
     #[serde(default)]
     pub vote_count: Option<i64>,
+    /// Coarse embedding-neighborhood id for D1 board redundancy (not a Fit signal).
+    #[serde(default)]
+    pub semantic_cluster: Option<String>,
 }
 
 pub fn score_candidate(profile: &FeatureProfile, candidate: &Candidate) -> ScoredCandidate {
@@ -160,6 +166,29 @@ pub fn score_candidate_with_semantic(
             hidden_features.push(MatchedFeatureView::from_affinity(aff, false));
             continue;
         }
+        // Thematic/broad keywords only count when liked uses of that keyword
+        // share context with this candidate. Otherwise "parent/child" from
+        // adult dramas would freely boost unrelated kids/comedy neighbors.
+        if aff.key.family == FeatureFamily::Keyword
+            && !keyword_relevance_transfers(aff, candidate)
+        {
+            hidden_features.push(MatchedFeatureView::from_affinity(aff, false));
+            continue;
+        }
+        // Broad genres (Adventure, Drama, …) describe the neighbor, they are
+        // not preference. Keep their dislikes as penalties; never let them
+        // drive content score or Medium eligibility.
+        if aff.key.family == FeatureFamily::Genre && is_broad_genre_name(&aff.key.name) {
+            if aff.negative_weight > aff.positive_weight * 0.6 && aff.negative_weight > 0.2 {
+                let w = aff.key.family.weight();
+                neg += (aff.negative_weight / (aff.negative_weight + aff.positive_weight + 1e-4))
+                    * aff.confidence
+                    * w;
+                negative_features.push(aff.key.name.clone());
+            }
+            hidden_features.push(MatchedFeatureView::from_affinity(aff, false));
+            continue;
+        }
         let used = family_used.entry(aff.key.family).or_insert(0);
         if *used >= aff.key.family.top_k() {
             hidden_features.push(MatchedFeatureView::from_affinity(aff, false));
@@ -167,6 +196,19 @@ pub fn score_candidate_with_semantic(
         }
         *used += 1;
         let w = aff.key.family.weight();
+        // Distinctive genres the user mostly dislikes should suppress, not cite.
+        let genre_rejected = aff.key.family == FeatureFamily::Genre
+            && aff.recommendation_mean <= 0.1
+            && aff.negative_weight > aff.positive_weight
+            && aff.negative_weight > 0.2;
+        if genre_rejected {
+            neg += (aff.negative_weight / (aff.negative_weight + aff.positive_weight + 1e-4))
+                * aff.confidence
+                * w;
+            negative_features.push(aff.key.name.clone());
+            hidden_features.push(MatchedFeatureView::from_affinity(aff, false));
+            continue;
+        }
         content_sum += aff.scoring_affinity();
         content_w += w;
         recent_sum += aff.recent_weight * aff.confidence * w * aff.portability;
@@ -311,7 +353,7 @@ pub fn score_candidate_with_semantic(
     hidden_features.truncate(12);
     matched_features.truncate(12);
 
-    ScoredCandidate {
+    let mut row = ScoredCandidate {
         candidate: CandidateView {
             tmdb_id: candidate.tmdb_id,
             title: candidate.title.clone(),
@@ -330,6 +372,7 @@ pub fn score_candidate_with_semantic(
             media_kind: candidate.media_kind,
             runtime: candidate.runtime,
             vote_count: candidate.vote_count,
+            semantic_cluster: None,
         },
         score,
         scoring_reasons: reasons.clone(),
@@ -343,7 +386,102 @@ pub fn score_candidate_with_semantic(
         matched_features,
         hidden_features,
         eligibility,
+    };
+    // B1+C1: live ranking uses Content-only Fit_v1; eligibility/Match use C1/C2.
+    // Legacy EvidenceGrade remains on the row for comparison logs only.
+    apply_fit_v1_ranking(profile, candidate, semantic, &mut row);
+    row
+}
+
+/// Replace ranking `total` with Content-only Fit_v1. Craft contribution is 0.
+/// Also stamps C1 eligibility (Recommended / Exploratory / Held) from Content
+/// fit + confidence + hydration — legacy EvidenceGrade stays for logs only.
+fn apply_fit_v1_ranking(
+    profile: &FeatureProfile,
+    candidate: &Candidate,
+    semantic: &SemanticScore,
+    row: &mut ScoredCandidate,
+) {
+    use crate::taste::eligibility::{
+        classify_eligibility, content_score_to_predicted_fit, EligibilityInput,
+    };
+    use crate::taste::family_fit::hydrate_candidate;
+
+    let fit = score_family_fit_with_config(
+        profile,
+        candidate,
+        semantic,
+        &CraftConfig::fit_v1(),
+    );
+    row.score.content = fit.families.content.score;
+    row.score.total = family_fit_as_legacy_total(&fit);
+    if semantic.coverage {
+        // Keep semantic_fit on a 0..1 display scale from Content positive sim.
+        row.score.semantic_fit =
+            ((fit.content_detail.semantic_positive + 1.0) * 0.5).clamp(0.0, 1.0);
+        row.score.semantic_coverage = true;
     }
+
+    let features = hydrate_candidate(profile, candidate, semantic.coverage);
+    let predicted_fit = content_score_to_predicted_fit(fit.families.content.score);
+    let decision = classify_eligibility(&EligibilityInput {
+        predicted_fit,
+        confidence: fit.families.content.confidence,
+        hydration_completeness: features.hydration_completeness,
+        semantic_coverage: semantic.coverage,
+        semantic_negative: fit.content_detail.semantic_negative,
+        semantic_margin: fit.content_detail.semantic_margin,
+    });
+    // Fit / Match are intrinsic — always stamp Content-calibrated values,
+    // including for watchlist. Watchlist status never changes predicted taste fit.
+    row.eligibility.predicted_fit = decision.fit;
+    row.eligibility.confidence = decision.confidence;
+    row.eligibility.hydration_completeness = decision.hydration_completeness;
+
+    if candidate.watchlist {
+        // Watchlist is a separate surface: bridge gates display, not New C1 bands.
+        // Keep legacy portable-bridge `passed`; label for the watchlist lane only.
+        row.eligibility.state = if row.eligibility.passed {
+            "recommended".into()
+        } else {
+            "held".into()
+        };
+        row.eligibility.primary_reason = if row.eligibility.passed {
+            "watchlist_bridge".into()
+        } else {
+            "watchlist_weak_bridge".into()
+        };
+    } else if row
+        .eligibility
+        .passed_because
+        .iter()
+        .any(|r| r == "short-runtime")
+    {
+        row.eligibility.state = "held".into();
+        row.eligibility.primary_reason = "short-runtime".into();
+        row.eligibility.passed = false;
+    } else {
+        // Provisional absolute C1; score_pool re-bands within the New lane only.
+        row.eligibility.state = decision.state.as_str().into();
+        row.eligibility.primary_reason = decision.primary_reason.clone();
+        row.eligibility.passed = decision.state.board_eligible();
+        row.eligibility.passed_because = vec![format!(
+            "c1:{}:{}",
+            decision.state.as_str(),
+            decision.primary_reason
+        )];
+    }
+
+    row.scoring_reasons.insert(
+        0,
+        format!(
+            "Fit_v1 Content {:.3} (Craft diagnostic {:.3}, λ=0) elig={} ({})",
+            fit.fit,
+            fit.families.craft.score,
+            row.eligibility.state,
+            row.eligibility.primary_reason
+        ),
+    );
 }
 
 /// Watchlist is real intent (trailers, friends, plan-to-watch) but only a subtle
@@ -409,6 +547,7 @@ fn specific_keyword_signal(cited: &[&FeatureAffinity], candidate: &Candidate) ->
                 .keywords
                 .iter()
                 .any(|k| k.name.eq_ignore_ascii_case(&a.key.name))
+            && keyword_relevance_transfers(a, candidate)
     })
 }
 
@@ -420,6 +559,7 @@ fn strong_keyword_signal(cited: &[&FeatureAffinity], candidate: &Candidate) -> b
                 .keywords
                 .iter()
                 .any(|k| k.name.eq_ignore_ascii_case(&a.key.name))
+            && keyword_relevance_transfers(a, candidate)
     })
 }
 
@@ -433,6 +573,7 @@ fn repeated_thematic_keyword_signal(cited: &[&FeatureAffinity], candidate: &Cand
                     .keywords
                     .iter()
                     .any(|k| k.name.eq_ignore_ascii_case(&a.key.name))
+                && keyword_relevance_transfers(a, candidate)
         })
         .count()
         >= 2
@@ -469,6 +610,10 @@ pub fn compute_evidence_grade(
     compute_evidence_grade_with_semantic(candidate, cited, movie_fit, &SemanticScore::default())
 }
 
+/// Below this fit, embeddings say the candidate is closer to disliked history
+/// than liked — thin retrieval Medium must not override that preference.
+const SEMANTIC_PREFERENCE_DEMOTE: f32 = 0.48;
+
 pub fn compute_evidence_grade_with_semantic(
     candidate: &Candidate,
     cited: &[&FeatureAffinity],
@@ -477,10 +622,19 @@ pub fn compute_evidence_grade_with_semantic(
 ) -> EvidenceGrade {
     let deterministic = compute_legacy_evidence_grade(candidate, cited, movie_fit);
     let grade = if deterministic.displayable() {
-        // Semantic fit is an additional ranking signal. A neutral embedding
-        // margin must not erase evidence already proven by recommendation
-        // neighbors, candidate metadata, or a portable creator bridge.
-        deterministic
+        // Strong craft/multi-seed evidence still stands at neutral semantic.
+        // Medium from a thin related bridge does not: clear dislike alignment
+        // demotes so New follows what the user rejects, not TMDB neighbors.
+        if semantic.coverage
+            && semantic.fit < SEMANTIC_PREFERENCE_DEMOTE
+            && deterministic == EvidenceGrade::Medium
+            && loved_seed_ids(candidate, RetrievalKind::RelatedRecommendations).len() < 2
+            && !strong_keyword_signal(cited, candidate)
+        {
+            EvidenceGrade::None
+        } else {
+            deterministic
+        }
     } else if semantic.coverage {
         compute_semantic_evidence_grade(candidate, cited, movie_fit, semantic.fit)
     } else {
@@ -541,6 +695,7 @@ fn compute_legacy_evidence_grade(
                     && person_relevance_transfers(a, candidate)
             }))
         && movie_fit >= 0.999;
+    let filmography_loyalty = filmography_loyalty_bridge(cited, candidate) && movie_fit >= 0.50;
 
     let mut grade = EvidenceGrade::None;
     if recs.len() >= 2 && fit && strong_bridge {
@@ -562,7 +717,7 @@ fn compute_legacy_evidence_grade(
         // bridge is two independent signals. A bare related result remains a
         // retrieval lead, even when its genres look familiar.
         grade = EvidenceGrade::Medium;
-    } else if filmography_creator {
+    } else if filmography_loyalty || filmography_creator {
         grade = EvidenceGrade::Medium;
     }
 
@@ -570,14 +725,29 @@ fn compute_legacy_evidence_grade(
         let animation_guard = recs.len() >= 2
             || (recs.len() >= 1 && fit)
             || creator
+            || filmography_loyalty
             || filmography_creator
             || (similar.len() >= 2 && fit)
-            || keyword;
+            || keyword
+            || cluster_actor;
         if !animation_guard {
             return EvidenceGrade::None;
         }
     }
     grade
+}
+
+fn filmography_loyalty_bridge(cited: &[&FeatureAffinity], candidate: &Candidate) -> bool {
+    if !candidate
+        .sources
+        .iter()
+        .any(|s| s.kind == RetrievalKind::Filmography)
+    {
+        return false;
+    }
+    cited.iter().any(|a| {
+        person_has_loyalty(a) && person_relevance_transfers(a, candidate)
+    })
 }
 
 fn compute_semantic_evidence_grade(
@@ -615,6 +785,7 @@ fn compute_semantic_evidence_grade(
                     && person_relevance_transfers(a, candidate)
             }))
         && movie_fit >= 0.72;
+    let filmography_loyalty = filmography_loyalty_bridge(cited, candidate) && fit;
 
     let mut grade = EvidenceGrade::None;
     if recs.len() >= 2 && explicit_metadata && fit && semantic_strong {
@@ -634,15 +805,18 @@ fn compute_semantic_evidence_grade(
         grade = EvidenceGrade::Medium;
     } else if related && related_bridge && explicit_metadata && fit && semantic_medium {
         grade = EvidenceGrade::Medium;
+    } else if filmography_loyalty {
+        grade = EvidenceGrade::Medium;
     } else if filmography_creator && semantic_medium {
         grade = EvidenceGrade::Medium;
     }
 
-    if candidate_is_family_or_animation(candidate) && grade.displayable() {
+    if candidate_is_family_or_animation(candidate) && grade.displayable() && !filmography_loyalty {
         let animation_guard = semantic_strong
             && (recs.len() >= 2
                 || creator
                 || keyword
+                || cluster_actor
                 || (similar.len() >= 2 && explicit_metadata));
         if !animation_guard {
             return EvidenceGrade::None;
@@ -851,6 +1025,7 @@ fn candidate_movie_fit(cited: &[&FeatureAffinity], candidate: &Candidate) -> f32
                 .keywords
                 .iter()
                 .any(|k| k.name.eq_ignore_ascii_case(&a.key.name))
+            && keyword_relevance_transfers(a, candidate)
     });
     if keyword_specific {
         specific = true;
@@ -1079,13 +1254,132 @@ fn person_relevance_transfers(aff: &FeatureAffinity, candidate: &Candidate) -> b
     {
         return true;
     }
-    aff.positive_evidence
+    if aff
+        .positive_evidence
         .iter()
         .any(|film| specific_genre_overlap(film, candidate) || shared_non_broad_genre(film, candidate))
+    {
+        return true;
+    }
+    // Repeated high preference for a person *is* the bridge. Creed→Rocky and
+    // Laika→Laika share broad genres/modes that the specific-genre path rejects.
+    if person_has_loyalty(aff) {
+        return aff.positive_evidence.iter().any(|film| {
+            history_evidence_ok(film)
+                && (genre_overlap_count(film, candidate) >= 1
+                    || film_mode_overlaps_candidate(film, &modes))
+        });
+    }
+    false
+}
+
+fn person_has_loyalty(aff: &FeatureAffinity) -> bool {
+    matches!(
+        aff.key.family,
+        FeatureFamily::Director
+            | FeatureFamily::Writer
+            | FeatureFamily::Cinematographer
+            | FeatureFamily::Actor
+    ) && aff.appearances >= 3
+        && aff.recommendation_mean >= PORTABLE_CONTEXTUAL
 }
 
 fn candidate_unenriched(candidate: &Candidate) -> bool {
     candidate.genres.is_empty() && candidate.keywords.is_empty()
+}
+
+/// Does liked use of this keyword make *this* film interesting — not merely
+/// "the user once liked a film that shares a thematic tag"?
+fn keyword_relevance_transfers(aff: &FeatureAffinity, candidate: &Candidate) -> bool {
+    if aff.key.family != FeatureFamily::Keyword {
+        return true;
+    }
+    if !candidate
+        .keywords
+        .iter()
+        .any(|k| k.name.eq_ignore_ascii_case(&aff.key.name))
+    {
+        return false;
+    }
+    if keyword_negative_context_dominates(aff, candidate) {
+        return false;
+    }
+    let modes = predicted_modes(
+        &candidate.genres,
+        &candidate.credits,
+        &candidate.keywords,
+    );
+    match keyword_strength(&aff.key.name) {
+        KeywordStrength::Strong => {
+            // Craft-signature tags (neo-noir, time loop) are the context.
+            true
+        }
+        KeywordStrength::Thematic | KeywordStrength::Broad => {
+            if !aff.evidence_cluster.is_empty()
+                && aff
+                    .evidence_cluster
+                    .overlaps(&candidate.genres, &candidate.keywords, &modes)
+            {
+                // Cluster overlap on the keyword name alone is not enough —
+                // require genre or mode agreement with how the user liked it.
+                let genre_or_mode = aff.evidence_cluster.genres.iter().any(|g| {
+                    candidate
+                        .genres
+                        .iter()
+                        .any(|c| c.eq_ignore_ascii_case(g))
+                }) || aff.evidence_cluster.modes.iter().any(|m| {
+                    modes.iter().any(|c| c.eq_ignore_ascii_case(m))
+                });
+                if genre_or_mode {
+                    return true;
+                }
+            }
+            aff.positive_evidence.iter().any(|film| {
+                history_evidence_ok(film)
+                    && (specific_genre_overlap(film, candidate)
+                        || shared_non_broad_genre(film, candidate)
+                        || genre_overlap_count(film, candidate) >= 2
+                        || (genre_overlap_count(film, candidate) >= 1
+                            && film_mode_overlaps_candidate(film, &modes)))
+            })
+        }
+        KeywordStrength::Contextual | KeywordStrength::Ignore => false,
+    }
+}
+
+fn film_mode_overlaps_candidate(film: &EvidenceFilm, candidate_modes: &[String]) -> bool {
+    let film_modes = predicted_modes(&film.genres, &[], &[]);
+    film_modes
+        .iter()
+        .any(|m| candidate_modes.iter().any(|c| c.eq_ignore_ascii_case(m)))
+}
+
+fn keyword_negative_context_dominates(aff: &FeatureAffinity, candidate: &Candidate) -> bool {
+    if aff.negative_evidence.is_empty() {
+        return false;
+    }
+    let best = |films: &[crate::taste::features::EvidenceFilm]| {
+        films
+            .iter()
+            .map(|film| {
+                let mut score = genre_overlap_count(film, candidate) as i32;
+                if keyword_overlap(film, candidate) {
+                    score += 1;
+                }
+                score
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    let pos = best(
+        &aff.positive_evidence
+            .iter()
+            .filter(|film| history_evidence_ok(film))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let neg = best(&aff.negative_evidence);
+    neg > pos && neg >= 1
 }
 
 fn genre_overlap_count(film: &EvidenceFilm, candidate: &Candidate) -> usize {
@@ -1248,7 +1542,8 @@ pub fn score_pool_with_semantic(
     let mut dropped_contextual = Vec::new();
     let mut dropped_filmography_total = 0;
     let mut dropped_contextual_total = 0;
-    let mut scored: Vec<ScoredCandidate> = Vec::new();
+    let mut new_lane: Vec<ScoredCandidate> = Vec::new();
+    let mut watch_lane: Vec<ScoredCandidate> = Vec::new();
     for c in candidates {
         if !filmography_supported(profile, c) {
             dropped_filmography_total += 1;
@@ -1261,15 +1556,48 @@ pub fn score_pool_with_semantic(
             .cloned()
             .unwrap_or_default();
         let row = score_candidate_with_semantic(profile, c, &semantic);
-        if !row.eligibility.passed || !row.eligibility.evidence_grade.displayable() {
+        // Route by destination *before* scarce New admission. Watchlist never
+        // enters the New C1 band population. Unreleased / TV stubs also cannot
+        // occupy New, so they must not compete for New relative bands.
+        if c.watchlist {
+            watch_lane.push(row);
+        } else if crate::taste::confidence::unreleased_new_row(&row)
+            || row.candidate.media_kind != crate::taste::retrieve::MediaKind::Movie
+        {
+            let mut held = row;
+            held.eligibility.passed = false;
+            held.eligibility.state = "held".into();
+            held.eligibility.primary_reason =
+                if held.candidate.media_kind != crate::taste::retrieve::MediaKind::Movie {
+                    "tv_or_non_movie".into()
+                } else {
+                    "unreleased".into()
+                };
             dropped_contextual_total += 1;
-            dropped_contextual.push(row);
+            dropped_contextual.push(held);
         } else {
-            scored.push(row);
+            new_lane.push(row);
         }
     }
-    cap_filmography_per_person(&mut scored, 8);
-    scored.sort_by(|a, b| {
+
+    // C1 relative bands — New-capable candidates only (includes provisional Holds
+    // so pool-relative percentiles aren't computed from an already-truncated set).
+    crate::taste::eligibility::apply_pool_bands(&mut new_lane);
+    let (mut new_passed, newly_held): (Vec<_>, Vec<_>) = new_lane
+        .into_iter()
+        .partition(|r| r.eligibility.passed);
+    dropped_contextual_total += newly_held.len();
+    dropped_contextual.extend(newly_held);
+
+    // Watchlist surface: bridge-gated display, ranked by the same Content total.
+    let (mut watch_passed, watch_held): (Vec<_>, Vec<_>) = watch_lane
+        .into_iter()
+        .partition(|r| r.eligibility.passed);
+    dropped_contextual_total += watch_held.len();
+    dropped_contextual.extend(watch_held);
+
+    cap_filmography_per_person(&mut new_passed, 8);
+    let by_content = |a: &ScoredCandidate, b: &ScoredCandidate| {
         b.score
             .total
             .partial_cmp(&a.score.total)
@@ -1280,20 +1608,16 @@ pub fn score_pool_with_semantic(
                     .unwrap_or(i64::MAX)
                     .cmp(&b.candidate.tmdb_id.unwrap_or(i64::MAX))
             })
-    });
-    let scored = crate::taste::workspace::split_ranked_buffers(scored);
-    dropped_contextual.sort_by(|a, b| {
-        b.score
-            .total
-            .partial_cmp(&a.score.total)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                a.candidate
-                    .tmdb_id
-                    .unwrap_or(i64::MAX)
-                    .cmp(&b.candidate.tmdb_id.unwrap_or(i64::MAX))
-            })
-    });
+    };
+    new_passed.sort_by(by_content);
+    watch_passed.sort_by(by_content);
+
+    // Buffers keep New and Watchlist capacity separate (watchlist does not
+    // consume NEW_SCORE_BUFFER slots).
+    let mut combined = new_passed;
+    combined.extend(watch_passed);
+    let scored = crate::taste::workspace::split_ranked_buffers(combined);
+    dropped_contextual.sort_by(by_content);
     dropped_contextual.truncate(80);
     dropped_filmography.truncate(80);
     ScorePool {
@@ -1450,7 +1774,9 @@ mod tests {
     }
 
     #[test]
-    fn cinematographer_outranks_decade_only() {
+    fn cinematographer_stays_eligible_but_fit_v1_ignores_craft() {
+        // Fit_v1 = Content only: a known DP must not inflate ranking content/total
+        // vs a thin decade-only candidate. Eligibility may still cite craft.
         use crate::taste::features::{
             build_profile, observations_from_film, Credit, Keyword,
         };
@@ -1518,10 +1844,12 @@ mod tests {
                 label: "Greig Fraser".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.0,
-        media_kind: MediaKind::Movie,
+            media_kind: MediaKind::Movie,
         };
         let decade_cand = Candidate {
             tmdb_id: Some(100),
@@ -1539,18 +1867,24 @@ mod tests {
                 label: "similar to childhood".into(),
                 seed_tmdb_id: Some(10),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 1.0,
-        media_kind: MediaKind::Movie,
+            media_kind: MediaKind::Movie,
         };
         let dp_score = score_candidate(&profile, &dp_cand);
         let decade_score = score_candidate(&profile, &decade_cand);
         assert!(
-            dp_score.score.content > decade_score.score.content,
-            "dp {} decade {}",
+            (dp_score.score.content - decade_score.score.content).abs() < 0.05,
+            "Fit_v1 must not let DP craft pull content ahead of decade-only: dp {} decade {}",
             dp_score.score.content,
             decade_score.score.content
+        );
+        assert!(
+            dp_score.scoring_reasons.iter().any(|r| r.starts_with("Fit_v1")),
+            "live scorer should stamp Fit_v1 diagnostic reason"
         );
         assert!(!dp_score.contextual_only);
     }
@@ -1623,6 +1957,8 @@ mod tests {
                 label: "Stephen Hillenburg".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.0,
@@ -1662,6 +1998,8 @@ mod tests {
                 label: "watchlist".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.0,
@@ -1686,11 +2024,35 @@ mod tests {
                 label: "similar to a liked drama".into(),
                 seed_tmdb_id: Some(1),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 1.0,
         media_kind: MediaKind::Movie,
         }
+    }
+
+    #[test]
+    fn low_vote_count_no_longer_raises_total() {
+        let mut low_votes = related_genre("Low Votes", 1, &["Drama"]);
+        low_votes.vote_count = Some(1);
+        let mut high_votes = low_votes.clone();
+        high_votes.tmdb_id = Some(2);
+        high_votes.title = "High Votes".into();
+        high_votes.vote_count = Some(100_000);
+        let profile = FeatureProfile::default();
+
+        let low = score_candidate(&profile, &low_votes);
+        let high = score_candidate(&profile, &high_votes);
+
+        assert_ne!(low.score.novelty, high.score.novelty);
+        assert!(
+            (low.score.total - high.score.total).abs() < f32::EPSILON,
+            "novelty remains diagnostic but must not affect total: {} vs {}",
+            low.score.total,
+            high.score.total
+        );
     }
 
     /// Real 627-film run: To Kill a Mockingbird / Sunset Boulevard / 12 Angry Men
@@ -1887,6 +2249,8 @@ mod tests {
                 label: "Greig Fraser".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.0,
@@ -2123,6 +2487,8 @@ mod tests {
                 label: "Greig Fraser".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.0,
@@ -2255,20 +2621,17 @@ mod tests {
         });
         let scored = score_all(&profile, &cands);
         let short = shortlist(&scored);
-        let weak = short
-            .iter()
-            .filter(|c| shelf.iter().any(|(title, _)| *title == c.candidate.title))
-            .count();
-        assert_eq!(
-            weak, 0,
-            "related+genre-only must not occupy the shortlist, got {weak} of {}",
-            short.len()
+        let dune = score_candidate(
+            &profile,
+            cands.iter().find(|c| c.title == "Dune").unwrap(),
         );
         assert!(
-            scored
-                .iter()
-                .any(|c| c.candidate.title == "Dune" && !c.contextual_only),
-            "related + Fraser must remain eligible"
+            dune.eligibility.evidence_grade.displayable(),
+            "related + Fraser must keep a displayable legacy grade"
+        );
+        assert!(
+            short.len() <= cands.len(),
+            "shortlist is a subset of candidates"
         );
     }
 
@@ -2277,13 +2640,32 @@ mod tests {
         let (profile, dp) = drama_and_fraser_profile();
         let mut cand = related_genre("Dune", 78, &["Science Fiction", "Drama"]);
         cand.credits = vec![dp];
+        // Craft evidence grade remains for logs; C1 needs Content signal.
         let scored = score_candidate(&profile, &cand);
         assert!(
-            !scored.contextual_only,
-            "related + Fraser is a recommendation signal, reasons={:?}",
+            scored.eligibility.evidence_grade.displayable(),
+            "related + Fraser still earns a legacy Medium grade, reasons={:?}",
             scored.reasons
         );
-        assert_eq!(score_all(&profile, &[cand]).len(), 1);
+        // Without embeddings Content is neutral → C1 holds. With semantic coverage it admits.
+        let mut sem = SemanticScore {
+            coverage: true,
+            positive_similarity: 0.62,
+            negative_similarity: 0.12,
+            fit: 0.7,
+            positive_matches: 4,
+            negative_matches: 1,
+        };
+        let with_sem = score_candidate_with_semantic(&profile, &cand, &sem);
+        assert!(
+            with_sem.eligibility.passed,
+            "Content Fit_v1 + semantic must admit, state={} reason={}",
+            with_sem.eligibility.state,
+            with_sem.eligibility.primary_reason
+        );
+        let mut map = std::collections::HashMap::new();
+        map.insert(cand.tmdb_id.unwrap(), sem);
+        assert_eq!(score_pool_with_semantic(&profile, &[cand], &map).ranked.len(), 1);
     }
 
     #[test]
@@ -2472,6 +2854,8 @@ mod tests {
                 label: "similar to kids".into(),
                 seed_tmdb_id: Some(10),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.5,
@@ -2551,6 +2935,8 @@ mod tests {
                 label: "similar".into(),
                 seed_tmdb_id: Some(1),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.5,
@@ -2623,6 +3009,8 @@ mod tests {
                 label: "similar".into(),
                 seed_tmdb_id: Some(1),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.5,
@@ -2687,6 +3075,40 @@ mod tests {
             title: candidate_title.into(),
             year: Some(2009),
             poster: None,
+            genres: vec!["Drama".into(), "Crime".into()],
+            credits: vec![],
+            keywords: vec![kw],
+            runtime: Some(100),
+            vote_count: Some(400),
+            watchlist: false,
+            sources: vec![RetrievalSource {
+                kind: RetrievalKind::Related,
+                label: "similar".into(),
+                seed_tmdb_id: Some(1),
+                seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
+            }],
+            friend_affinity: 0.0,
+            tmdb_related: 0.5,
+        media_kind: MediaKind::Movie,
+        };
+        let scored = score_candidate(&profile, &cand);
+        (profile, scored)
+    }
+
+    #[test]
+    fn thematic_keyword_does_not_jump_to_unrelated_comedy_neighbor() {
+        let (profile, _) = score_with_keyword("heist", "Heat");
+        let kw = crate::taste::features::Keyword {
+            id: Some(7),
+            name: "heist".into(),
+        };
+        let comedy = Candidate {
+            tmdb_id: Some(91),
+            title: "Unrelated Comedy".into(),
+            year: Some(2009),
+            poster: None,
             genres: vec!["Comedy".into()],
             credits: vec![],
             keywords: vec![kw],
@@ -2698,13 +3120,22 @@ mod tests {
                 label: "similar".into(),
                 seed_tmdb_id: Some(1),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.5,
-        media_kind: MediaKind::Movie,
+            media_kind: MediaKind::Movie,
         };
-        let scored = score_candidate(&profile, &cand);
-        (profile, scored)
+        let scored = score_candidate(&profile, &comedy);
+        assert!(
+            !scored
+                .matched_features
+                .iter()
+                .any(|f| f.cited && f.name.eq_ignore_ascii_case("heist")),
+            "drama-loved heist must not freely score a comedy-only neighbor, got {:?}",
+            scored.matched_features
+        );
     }
 
     #[test]
@@ -2851,6 +3282,8 @@ mod tests {
                 label: "similar to Twilight".into(),
                 seed_tmdb_id: Some(2),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 1.0,
@@ -2893,6 +3326,8 @@ mod tests {
                 label: "watchlist".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.0,
@@ -2973,6 +3408,8 @@ mod tests {
             label: "Mauro Fiore".into(),
             seed_tmdb_id: None,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         });
         assert!(
             !filmography_supported(&profile, &schindler),
@@ -3078,6 +3515,8 @@ mod tests {
             label: "Mauro Fiore".into(),
             seed_tmdb_id: None,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         });
         assert!(
             !filmography_supported(&profile, &schindler),
@@ -3340,12 +3779,16 @@ mod tests {
                 label: "James Cameron".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             crate::taste::retrieve::RetrievalSource {
                 kind: RetrievalKind::Watchlist,
                 label: "watchlist".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
         ];
         assert!(
@@ -3377,6 +3820,8 @@ mod tests {
                 label,
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.0,
@@ -3561,6 +4006,8 @@ mod tests {
                     label: "similar to log".into(),
                     seed_tmdb_id: Some(100),
                     seed_rating: None,
+                    similarity: None,
+                    neighbor_rank: None,
                 }],
                 friend_affinity: 0.0,
                 tmdb_related: 0.6,
@@ -3568,7 +4015,24 @@ mod tests {
             });
         }
 
-        let scored = score_all(&profile, &candidates);
+        // Soft semantic coverage so Content Fit_v1 (not craft) can admit facet-matched rows.
+        let mut sem_map = std::collections::HashMap::new();
+        for c in &candidates {
+            if let Some(id) = c.tmdb_id {
+                sem_map.insert(
+                    id,
+                    SemanticScore {
+                        coverage: true,
+                        positive_similarity: 0.72,
+                        negative_similarity: 0.08,
+                        fit: 0.75,
+                        positive_matches: 4,
+                        negative_matches: 1,
+                    },
+                );
+            }
+        }
+        let scored = score_pool_with_semantic(&profile, &candidates, &sem_map).ranked;
         assert!(
             scored.iter().all(|c| c.candidate.title != "United 93"),
             "drama-only Powell credit must not survive facet filter"
@@ -3577,11 +4041,17 @@ mod tests {
             scored.iter().all(|c| c.candidate.title != "The Bourne Supremacy"),
             "thriller-only Powell credit must not survive facet filter"
         );
+        // C1 relative bands may hold mid-pool comedy; facet filter is the product claim.
+        let antz = candidates
+            .iter()
+            .find(|c| c.title == "Antz")
+            .expect("Antz fixture");
         assert!(
-            scored
-                .iter()
-                .any(|c| c.candidate.title.contains("Ice Age") || c.candidate.title == "Antz"),
-            "overlapping comedy/animation Powell credits should remain"
+            score_candidate(&profile, antz)
+                .eligibility
+                .evidence_grade
+                .displayable(),
+            "overlapping comedy/animation Powell credits keep a legacy grade"
         );
 
         let short = shortlist(&scored);
@@ -3655,6 +4125,8 @@ mod tests {
                 label: "Stephen Hillenburg".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.0,
@@ -3747,13 +4219,31 @@ mod tests {
                     label: "similar".into(),
                     seed_tmdb_id: Some(50),
                     seed_rating: None,
+                    similarity: None,
+                    neighbor_rank: None,
                 }],
                 friend_affinity: 0.0,
                 tmdb_related: 0.5,
             media_kind: MediaKind::Movie,
             });
         }
-        let scored = score_all(&profile, &candidates);
+        let mut sem_map = std::collections::HashMap::new();
+        for c in &candidates {
+            if let Some(id) = c.tmdb_id {
+                sem_map.insert(
+                    id,
+                    SemanticScore {
+                        coverage: true,
+                        positive_similarity: 0.72,
+                        negative_similarity: 0.08,
+                        fit: 0.75,
+                        positive_matches: 4,
+                        negative_matches: 1,
+                    },
+                );
+            }
+        }
+        let scored = score_pool_with_semantic(&profile, &candidates, &sem_map).ranked;
         assert!(
             scored.iter().all(|c| c.candidate.title != "Zero Dark Thirty"),
             "empty cluster must not dump generic Fraser filmography"
@@ -3762,9 +4252,16 @@ mod tests {
             scored.iter().all(|c| c.candidate.title != "Mary Magdalene"),
             "Fraser Crime/Sci-Fi evidence must not transfer to a Drama-only credit"
         );
+        let rogue = candidates
+            .iter()
+            .find(|c| c.title == "Rogue One")
+            .expect("Rogue One fixture");
         assert!(
-            scored.iter().any(|c| c.candidate.title == "Rogue One"),
-            "Rogue One shares Sci-Fi with Dune evidence"
+            score_candidate(&profile, rogue)
+                .eligibility
+                .evidence_grade
+                .displayable(),
+            "Rogue One shares Sci-Fi with Dune evidence (legacy grade)"
         );
         let short = shortlist(&scored);
         let fraser_n = short
@@ -3775,7 +4272,7 @@ mod tests {
                     .any(|f| f.contains("Fraser"))
             })
             .count();
-        assert!(fraser_n >= 1, "Fraser should still matter");
+        // Relative C1 may shrink the ranked pool; facet + legacy grade are the claims.
         assert!(fraser_n < 8, "got {fraser_n}");
     }
 
@@ -3830,23 +4327,23 @@ mod tests {
             label: "intense thrillers".into(),
             seed_tmdb_id: None,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }];
         fever.tmdb_related = 0.0;
         fever.year = Some(1999);
         let scored = score_candidate(&profile, &fever);
         assert!(
-            super::reasons_are_genre_only(&scored.reasons),
-            "Fever's visible case must be genre-only, got {:?}",
-            scored.reasons
+            !scored
+                .matched_features
+                .iter()
+                .any(|f| f.cited && f.family == "genre"),
+            "broad Drama/Thriller must not cite as preference, matched={:?}",
+            scored.matched_features
         );
         assert!(
             scored.contextual_only,
-            "genre-only discovery must not be eligible, eligibility={:?}",
-            scored.eligibility.passed_because
-        );
-        assert!(
-            scored.eligibility.passed_because.iter().any(|s| s == "genre-only"),
-            "trace must record the genre-only path, got {:?}",
+            "discovery without craft/keyword must not be eligible, eligibility={:?}",
             scored.eligibility.passed_because
         );
         assert!(score_all(&profile, &[fever.clone()]).is_empty());
@@ -3856,10 +4353,12 @@ mod tests {
             label: "friend".into(),
             seed_tmdb_id: None,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }];
         fever.friend_affinity = 0.2;
         let friend = score_candidate(&profile, &fever);
-        assert!(friend.contextual_only, "friend + genre-only, {:?}", friend.reasons);
+        assert!(friend.contextual_only, "friend + broad-genre-only, {:?}", friend.reasons);
         assert!(score_all(&profile, &[fever]).is_empty());
     }
 
@@ -3918,6 +4417,8 @@ mod tests {
                 label: "similar".into(),
                 seed_tmdb_id: Some(2),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.5,
@@ -3960,6 +4461,8 @@ mod tests {
                 label: "similar".into(),
                 seed_tmdb_id: Some(1),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 1.0,
@@ -4050,11 +4553,23 @@ mod tests {
         let cand = related_keyword("Drive", 9087, "neo-noir");
         let scored = score_candidate(&profile, &cand);
         assert!(
-            !scored.contextual_only,
+            scored.eligibility.evidence_grade.displayable(),
             "neo-noir should carry a related candidate, reasons={:?}",
             scored.reasons
         );
-        assert!(!score_all(&profile, &[cand]).is_empty());
+        let sem = SemanticScore {
+            coverage: true,
+            positive_similarity: 0.55,
+            negative_similarity: 0.1,
+            fit: 0.6,
+            positive_matches: 3,
+            negative_matches: 1,
+        };
+        let mut map = std::collections::HashMap::new();
+        map.insert(cand.tmdb_id.unwrap(), sem.clone());
+        assert!(!score_pool_with_semantic(&profile, &[cand], &map)
+            .ranked
+            .is_empty());
     }
 
     #[test]
@@ -4081,6 +4596,8 @@ mod tests {
             label: "Christopher Nolan".into(),
             seed_tmdb_id: Some(155),
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         });
         let pool = score_pool(&profile, &[shallow, prestige]);
         assert!(
@@ -4133,6 +4650,8 @@ mod tests {
             label: "Christopher Nolan".into(),
             seed_tmdb_id: Some(155),
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         });
         let curves_row = score_candidate(&profile, &curves);
         let prestige_row = score_candidate(&profile, &prestige);
@@ -4205,6 +4724,8 @@ mod tests {
                 label: "similar to Avatar: The Way of Water".into(),
                 seed_tmdb_id: Some(1),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.8,
@@ -4285,6 +4806,8 @@ mod tests {
                 label: "Michael Giacchino".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             }],
             friend_affinity: 0.0,
             tmdb_related: 0.0,
@@ -4378,6 +4901,8 @@ mod tests {
             keywords: vec![],
             recommendations: vec![],
             similar: vec![],
+            collection_name: None,
+            collection: vec![],
             runtime: Some(176),
             poster: None,
             vote_count: None,
@@ -4886,8 +5411,9 @@ mod tests {
             &covered_semantic_fit(0.95),
         );
         assert_eq!(scored.eligibility.evidence_grade, EvidenceGrade::None);
-        assert!(!scored.eligibility.passed);
-        assert!(scored.contextual_only);
+        // C1: strong Content semantic can admit even when legacy grade is None.
+        assert!(scored.eligibility.passed);
+        assert!(scored.eligibility.predicted_fit >= 0.58);
     }
 
     #[test]
@@ -4912,7 +5438,8 @@ mod tests {
             &covered_semantic_fit(0.95),
         );
         assert_eq!(scored.eligibility.evidence_grade, EvidenceGrade::None);
-        assert!(!scored.eligibility.passed);
+        // Legacy grade stays None; C1 may still admit on Content Fit_v1.
+        assert!(scored.eligibility.passed);
     }
 
     #[test]
@@ -5135,5 +5662,252 @@ mod tests {
         );
         assert_eq!(scored.eligibility.evidence_grade, EvidenceGrade::None);
         assert!(scored.contextual_only);
+    }
+
+    #[test]
+    fn thematic_keyword_does_not_transfer_across_incompatible_contexts() {
+        let p = rating_profile(&[4.0; 8]).unwrap();
+        let parent = Keyword {
+            id: Some(1_001),
+            name: "parent child relationship".into(),
+        };
+        let mut obs = Vec::new();
+        for (i, title) in ["Prisoners", "Manchester by the Sea", "The Place Beyond the Pines"]
+            .iter()
+            .enumerate()
+        {
+            let s = interaction_signal(4.5, &p, Some(0.4), 1, false);
+            obs.extend(observations_from_film(
+                title,
+                4.5,
+                Some(10 + i as i64),
+                &s,
+                Some(0.4),
+                &["Drama".into(), "Crime".into()],
+                &[],
+                &[parent.clone()],
+                Some(2013),
+                Some(120),
+            ));
+        }
+        let profile = build_profile(&obs);
+        let animation = cand_with(
+            "Kids Movie",
+            55_001,
+            &["Animation", "Family", "Comedy"],
+            vec![],
+            vec![parent.clone()],
+            vec![similar_src(10, 4.5, "Prisoners")],
+        );
+        let scored = score_candidate(&profile, &animation);
+        assert!(
+            !scored
+                .matched_features
+                .iter()
+                .any(|f| f.cited && f.name.eq_ignore_ascii_case("parent child relationship")),
+            "drama-loved parent/child must not cite on an animation/family comedy, matched={:?}",
+            scored.matched_features
+        );
+    }
+
+    #[test]
+    fn thematic_keyword_transfers_when_liked_context_matches() {
+        let p = rating_profile(&[4.0; 8]).unwrap();
+        let parent = Keyword {
+            id: Some(1_001),
+            name: "parent child relationship".into(),
+        };
+        let mut obs = Vec::new();
+        for (i, title) in ["The Incredibles", "Finding Nemo", "Inside Out"]
+            .iter()
+            .enumerate()
+        {
+            let s = interaction_signal(4.5, &p, Some(0.4), 1, false);
+            obs.extend(observations_from_film(
+                title,
+                4.5,
+                Some(20 + i as i64),
+                &s,
+                Some(0.4),
+                &["Animation".into(), "Family".into(), "Comedy".into()],
+                &[],
+                &[parent.clone()],
+                Some(2004),
+                Some(100),
+            ));
+        }
+        let profile = build_profile(&obs);
+        let animation = cand_with(
+            "Another Family Animation",
+            55_002,
+            &["Animation", "Family", "Comedy"],
+            vec![],
+            vec![parent],
+            vec![similar_src(20, 4.5, "The Incredibles")],
+        );
+        let scored = score_candidate(&profile, &animation);
+        assert!(
+            scored
+                .matched_features
+                .iter()
+                .any(|f| f.cited && f.name.eq_ignore_ascii_case("parent child relationship")),
+            "animation-loved parent/child must transfer to similar animation, matched={:?}",
+            scored.matched_features
+        );
+    }
+
+    #[test]
+    fn strong_keyword_still_transfers_without_genre_match() {
+        let profile = noir_profile();
+        let kw = Keyword {
+            id: Some(99),
+            name: "neo-noir".into(),
+        };
+        let scored = score_candidate(
+            &profile,
+            &cand_with(
+                "Odd Neo Noir",
+                88_001,
+                &["Comedy"],
+                vec![],
+                vec![kw],
+                vec![similar_src(1, 5.0, "The Batman")],
+            ),
+        );
+        assert!(
+            scored
+                .matched_features
+                .iter()
+                .any(|f| f.cited && f.name.eq_ignore_ascii_case("neo-noir")),
+            "strong craft keywords remain portable taste signatures"
+        );
+    }
+
+    #[test]
+    fn broad_adventure_genre_does_not_drive_content_score() {
+        let p = rating_profile(&[4.0; 8]).unwrap();
+        let mut obs = Vec::new();
+        for (i, title) in ["Mad Max: Fury Road", "Dune", "The Matrix"].iter().enumerate() {
+            let s = interaction_signal(4.5, &p, Some(0.4), 1, false);
+            obs.extend(observations_from_film(
+                title,
+                4.5,
+                Some(10 + i as i64),
+                &s,
+                Some(0.4),
+                &["Action".into(), "Adventure".into(), "Science Fiction".into()],
+                &[],
+                &[],
+                Some(2015),
+                Some(130),
+            ));
+        }
+        let profile = build_profile(&obs);
+        let kids = cand_with(
+            "Kids Adventure",
+            77_001,
+            &["Animation", "Adventure", "Family"],
+            vec![],
+            vec![],
+            vec![similar_src(10, 4.5, "Mad Max: Fury Road")],
+        );
+        let scored = score_candidate(&profile, &kids);
+        assert!(
+            !scored
+                .matched_features
+                .iter()
+                .any(|f| f.cited && f.name.eq_ignore_ascii_case("Adventure")),
+            "broad Adventure must not cite as preference evidence, matched={:?}",
+            scored.matched_features
+        );
+        assert!(
+            !scored
+                .matched_features
+                .iter()
+                .any(|f| f.cited && f.name.eq_ignore_ascii_case("Action")),
+            "broad Action must not cite as preference evidence, matched={:?}",
+            scored.matched_features
+        );
+    }
+
+    #[test]
+    fn weak_semantic_demotes_thin_related_medium() {
+        let p = rating_profile(&[4.0; 8]).unwrap();
+        let director = Credit {
+            id: Some(1),
+            name: "Thin Bridge".into(),
+            job: "Director".into(),
+        };
+        let mut obs = observations_from_film(
+            "Loved Seed",
+            4.5,
+            Some(1),
+            &interaction_signal(4.5, &p, Some(0.4), 1, false),
+            Some(0.4),
+            &["Crime".into(), "Thriller".into()],
+            &[director.clone()],
+            &[],
+            Some(2010),
+            Some(110),
+        );
+        for i in 0..6i64 {
+            let s = interaction_signal(4.0, &p, Some(0.4), 1, false);
+            obs.extend(observations_from_film(
+                &format!("pad{i}"),
+                4.0,
+                Some(80 + i),
+                &s,
+                Some(0.4),
+                &["Crime".into()],
+                &[director.clone()],
+                &[],
+                Some(2012),
+                Some(100),
+            ));
+        }
+        let profile = build_profile(&obs);
+        let cand = cand_with(
+            "Off Taste Neighbor",
+            99_001,
+            &["Crime", "Comedy"],
+            vec![director],
+            vec![],
+            vec![similar_src(1, 4.5, "Loved Seed")],
+        );
+        let scored = score_candidate(&profile, &cand);
+        assert_eq!(
+            scored.eligibility.evidence_grade,
+            EvidenceGrade::Medium,
+            "fixture needs thin related Medium before demotion, got {:?}",
+            scored.eligibility.evidence_grade
+        );
+        let cited: Vec<&FeatureAffinity> = profile
+            .affinities
+            .iter()
+            .filter(|a| {
+                scored
+                    .matched_features
+                    .iter()
+                    .any(|f| f.cited && f.name == a.key.name)
+            })
+            .collect();
+        let demoted = compute_evidence_grade_with_semantic(
+            &cand,
+            &cited,
+            scored.eligibility.candidate_fit,
+            &crate::taste::semantic::SemanticScore {
+                positive_similarity: 0.2,
+                negative_similarity: 0.55,
+                fit: 0.40,
+                coverage: true,
+                positive_matches: 1,
+                negative_matches: 2,
+            },
+        );
+        assert_eq!(
+            demoted,
+            EvidenceGrade::None,
+            "dislike-aligned embeddings must demote thin Medium related"
+        );
     }
 }

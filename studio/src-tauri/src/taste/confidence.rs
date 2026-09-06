@@ -9,16 +9,21 @@ pub const NEW_MATCH_FLOOR: u8 = 70;
 pub const RELATED_ONLY_CAP: u8 = 69;
 pub const SINGLE_BRIDGE_CAP: u8 = 69;
 pub const LIMITED_EVIDENCE_CAP: u8 = 69;
-/// Temporary honesty cap: a strong unseen card cannot yet display 80%+.
-/// Remove once match % is recalibrated independently of watchlist membership.
-pub const NON_WATCHLIST_BAND_CAP: u8 = 79;
 pub const EXCELLENT_BAND: u8 = 90;
 const APPEARANCE_CAP: u32 = 8;
 const LIMITED_PENALTY: f32 = 0.82;
 const STRENGTH_SCALE: f32 = 0.38;
-const STRENGTH_WEIGHT: f32 = 0.72;
-const GRADE_WEIGHT: f32 = 0.18;
+/// Displayed match % tracks overall scoring total (already includes negatives),
+/// with craft affinity as ballast rather than the driver.
+const OVERALL_WEIGHT: f32 = 0.48;
+const STRENGTH_WEIGHT: f32 = 0.28;
+const GRADE_WEIGHT: f32 = 0.14;
 const APPEARANCE_WEIGHT: f32 = 0.10;
+const CONFLICT_WEIGHT: f32 = 0.42;
+const TOTAL_SCALE: f32 = 0.28;
+const NO_CRAFT_PENALTY: f32 = 0.45;
+const NEIGHBOR_FLOOR_CONFLICT_FREE: f32 = 0.20;
+const NEIGHBOR_FLOOR_CONFLICT_SCALE: f32 = 0.75;
 const PORTABLE_AFFINITY_FLOOR: f32 = 0.18;
 const PORTABLE_APPEARANCES: u32 = 3;
 
@@ -29,7 +34,46 @@ const CRAFT: &[&str] = &[
     "composer",
     "actor",
 ];
+
+fn overall_component(total: f32) -> f32 {
+    ((total / TOTAL_SCALE).tanh() * 0.5 + 0.5).clamp(0.0, 1.0)
+}
+
+fn conflict_magnitude(c: &ScoredCandidate) -> f32 {
+    (-c.score.negative_evidence).clamp(0.0, 1.0)
+}
+
+/// Neighbor floors must not resurrect cards the scorer already marked as a
+/// poor overall fit. Strong conflict discounts the floor before it applies.
+fn apply_neighbor_floor(score: u8, c: &ScoredCandidate) -> u8 {
+    let floor = recommendation_neighbor_floor(c);
+    if floor == 0 {
+        return score;
+    }
+    let conflict = conflict_magnitude(c);
+    if conflict < NEIGHBOR_FLOOR_CONFLICT_FREE {
+        score.max(floor)
+    } else {
+        let discounted =
+            ((floor as f32) * (1.0 - NEIGHBOR_FLOOR_CONFLICT_SCALE * conflict)).round() as u8;
+        score.max(discounted)
+    }
+}
+
 pub fn match_score(c: &ScoredCandidate) -> u8 {
+    // C2: calibrated Content Fit_v1 → displayed Match. Legacy craft/grade/neighbor
+    // floors no longer drive the number shown on New.
+    let fit = if c.eligibility.predicted_fit > 0.0 {
+        c.eligibility.predicted_fit
+    } else {
+        // Fallback for fixtures that predate Fit_v1 stamping.
+        ((c.score.content + 1.0) * 0.5).clamp(0.0, 1.0)
+    };
+    crate::taste::match_calibration::fit_to_match_percent(fit)
+}
+
+/// Legacy match formula retained for run-log comparison only.
+pub fn legacy_match_score(c: &ScoredCandidate) -> u8 {
     let (quality, n) = best_craft_quality(c);
     let strength = (quality / STRENGTH_SCALE).tanh().clamp(0.0, 1.0);
     let g = (evidence_grade(c) as f32 / 3.0).clamp(0.0, 1.0);
@@ -39,11 +83,17 @@ pub fn match_score(c: &ScoredCandidate) -> u8 {
     } else {
         1.0
     };
-    let raw = ((STRENGTH_WEIGHT * strength + GRADE_WEIGHT * g + APPEARANCE_WEIGHT * appear)
-        * limited)
-        .clamp(0.0, 1.0);
-    let mut score = (100.0 * raw).round().clamp(0.0, 100.0) as u8;
-    score = score.max(recommendation_neighbor_floor(c));
+    let mut raw = OVERALL_WEIGHT * overall_component(c.score.total)
+        + STRENGTH_WEIGHT * strength
+        + GRADE_WEIGHT * g
+        + APPEARANCE_WEIGHT * appear;
+    raw *= 1.0 - CONFLICT_WEIGHT * conflict_magnitude(c);
+    raw *= limited;
+    if quality < 0.05 {
+        raw *= NO_CRAFT_PENALTY;
+    }
+    let mut score = (100.0 * raw.clamp(0.0, 1.0)).round().clamp(0.0, 100.0) as u8;
+    score = apply_neighbor_floor(score, c);
     if related_only(c) {
         score = score.min(RELATED_ONLY_CAP);
     }
@@ -53,7 +103,7 @@ pub fn match_score(c: &ScoredCandidate) -> u8 {
     if has_filmography_source(c)
         && c.candidate
             .sources
-        .iter()
+            .iter()
             .any(|s| s.kind.is_related())
         && !qualifying_director_dp_filmography(c)
         && !mixed_recommendation_corroboration(c)
@@ -74,9 +124,6 @@ pub fn match_score(c: &ScoredCandidate) -> u8 {
     {
         score = score.min(RELATED_ONLY_CAP);
     }
-    if !c.candidate.watchlist {
-        score = score.min(NON_WATCHLIST_BAND_CAP);
-    }
     if qualifying_director_dp_filmography(c) {
         score = score.max(NEW_MATCH_FLOOR);
     }
@@ -84,6 +131,7 @@ pub fn match_score(c: &ScoredCandidate) -> u8 {
 }
 
 pub fn passes_match_floor(c: &ScoredCandidate) -> bool {
+    // C1: Match floors no longer gate New. Kept for older diagnostics.
     match_score(c) >= MATCH_SCORE_FLOOR
 }
 
@@ -279,6 +327,7 @@ pub fn filmography_single_bridge(c: &ScoredCandidate) -> bool {
     filmography_only(c)
         && qualified_bridge_count(c) < 2
         && !qualifying_director_dp_filmography(c)
+        && !portable_person_loyalty(c)
 }
 
 fn has_filmography_source(c: &ScoredCandidate) -> bool {
@@ -317,18 +366,52 @@ pub fn has_independent_new_bridge(c: &ScoredCandidate) -> bool {
     if has_filmography_source(c) {
         return qualifying_director_dp_filmography(c)
             || has_new_corroboration(c)
-            || mixed_recommendation_corroboration(c);
+            || mixed_recommendation_corroboration(c)
+            || portable_person_loyalty(c);
     }
     true
 }
 
+fn portable_person_loyalty(c: &ScoredCandidate) -> bool {
+    // Writers/DPs still need corroboration. Directors and actors the user
+    // repeatedly loves are why filmography retrieval exists — but only when
+    // the movie itself looks compatible (not a random résumé credit).
+    cited_craft(c).into_iter().any(|f| {
+        matches!(f.family.as_str(), "director" | "actor")
+            && f.appearances >= 4
+            && f.scoring_affinity >= PORTABLE_AFFINITY_FLOOR
+            && f.recommendation_mean >= 0.45
+            && c.eligibility.candidate_fit >= 0.55
+    })
+}
+
+/// Related-only neighbors need a clear preference margin, not just Medium
+/// eligibility from a TMDB similar-to edge.
+#[allow(dead_code)]
+const RELATED_ONLY_TOTAL_FLOOR: f32 = 0.06;
+
 pub fn occupies_new(c: &ScoredCandidate) -> bool {
-    !c.candidate.watchlist
-        && c.eligibility.evidence_grade.displayable()
-        && !unreleased_new_row(c)
-        && !tv_movie(c)
-        && has_independent_new_bridge(c)
-        && !filmography_single_bridge(c)
+    if c.candidate.watchlist || unreleased_new_row(c) || tv_movie(c) {
+        return false;
+    }
+    // C1: Content Fit_v1 decision layer. Recommended always; Exploratory fills.
+    // Legacy EvidenceGrade / neighbor floors / match floors do not admit or veto.
+    match c.eligibility.state.as_str() {
+        "recommended" | "exploratory" => true,
+        "held" => false,
+        _ => {
+            // Fixtures / pre-C1 rows: fall back to passed flag without grade authority.
+            c.eligibility.passed && c.eligibility.predicted_fit >= 0.50
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn discovery_row(c: &ScoredCandidate) -> bool {
+    c.candidate
+        .sources
+        .iter()
+        .any(|s| s.kind == RetrievalKind::Discovery)
 }
 
 /// Explore is folded into New. Kept so older run logs still deserialize.
@@ -346,7 +429,7 @@ pub fn filter_reason(c: &ScoredCandidate) -> Option<String> {
         c.candidate.runtime,
         Some(rt) if (1..crate::taste::score::FEATURE_RUNTIME_MIN).contains(&rt)
     );
-    if (c.candidate.watchlist && c.eligibility.passed && c.eligibility.evidence_grade.displayable())
+    if (c.candidate.watchlist && c.eligibility.passed)
         || (!c.candidate.watchlist && occupies_new(c))
     {
         return None;
@@ -363,11 +446,11 @@ pub fn filter_reason(c: &ScoredCandidate) -> Option<String> {
     if unreleased_new_row(c) {
         return Some("unreleased".into());
     }
-    if filmography_single_bridge(c) {
-        return Some("filmography-only".into());
+    if !c.eligibility.primary_reason.is_empty() {
+        return Some(c.eligibility.primary_reason.clone());
     }
-    if !c.eligibility.passed || !c.eligibility.evidence_grade.displayable() {
-        return Some("weak-evidence".into());
+    if c.eligibility.state == "held" || !c.eligibility.passed {
+        return Some("held".into());
     }
     Some("held".into())
 }
@@ -390,13 +473,24 @@ pub fn sort_workspace(rows: &mut [ScoredCandidate]) {
     rows.sort_by(rank_order);
 }
 
-/// Internal ranking. Evidence grade chooses the quality band; fit and
-/// corroboration order rows within that band.
+/// Internal ranking. Content Fit_v1 total leads; predicted_fit and confidence break ties.
 pub fn rank_order(a: &ScoredCandidate, b: &ScoredCandidate) -> std::cmp::Ordering {
-    b.eligibility
-        .evidence_grade
-        .rank()
-        .cmp(&a.eligibility.evidence_grade.rank())
+    b.score
+        .total
+        .partial_cmp(&a.score.total)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| {
+            b.eligibility
+                .predicted_fit
+                .partial_cmp(&a.eligibility.predicted_fit)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| {
+            b.eligibility
+                .confidence
+                .partial_cmp(&a.eligibility.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
         .then_with(|| {
             b.eligibility
                 .candidate_fit
@@ -406,18 +500,6 @@ pub fn rank_order(a: &ScoredCandidate, b: &ScoredCandidate) -> std::cmp::Orderin
         .then_with(|| {
             crate::taste::score::unique_loved_rec_seeds(b)
                 .cmp(&crate::taste::score::unique_loved_rec_seeds(a))
-        })
-        .then_with(|| {
-            b.score
-                .negative_evidence
-                .partial_cmp(&a.score.negative_evidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .then_with(|| {
-            b.score
-                .total
-                .partial_cmp(&a.score.total)
-                .unwrap_or(std::cmp::Ordering::Equal)
         })
         .then_with(|| {
             a.candidate
@@ -499,6 +581,8 @@ mod tests {
                     label: "x".into(),
                     seed_tmdb_id: None,
                     seed_rating: None,
+                    similarity: None,
+                    neighbor_rank: None,
                 }],
                 directors: vec!["A".into()],
                 genres: vec![],
@@ -506,6 +590,7 @@ mod tests {
                 media_kind: MediaKind::Movie,
                 runtime: Some(110),
                 vote_count: Some(400),
+                semantic_cluster: None,
             },
             score: CandidateScore {
                 content: 0.5,
@@ -531,10 +616,23 @@ mod tests {
             hidden_features: vec![],
             eligibility: crate::taste::explain::EligibilityTrace {
                 portable_evidence_required: true,
-                passed: true,
+                passed: evidence_grade.displayable(),
                 passed_because: vec!["fixture".into()],
                 candidate_fit: 1.0,
                 evidence_grade,
+                predicted_fit: if evidence_grade.displayable() { 0.72 } else { 0.35 },
+                confidence: 0.6,
+                hydration_completeness: 0.7,
+                state: if evidence_grade.displayable() {
+                    "recommended".into()
+                } else {
+                    "held".into()
+                },
+                primary_reason: if evidence_grade.displayable() {
+                    "recommended".into()
+                } else {
+                    "low_fit".into()
+                },
             },
         }
     }
@@ -556,14 +654,14 @@ mod tests {
     fn higher_evidence_grade_scores_higher() {
         let g3 = row(&[(5, true), (4, true)], true);
         let g2 = row(&[(2, true)], false);
-        assert!(match_score(&g3) > match_score(&g2));
+        assert!(legacy_match_score(&g3) > legacy_match_score(&g2));
     }
 
     #[test]
     fn more_appearances_only_raise_score_modestly() {
         let n8 = row_with(vec![feat("composer", 8, 0.22)], false, false, 0.4, 1);
         let n4 = row_with(vec![feat("composer", 4, 0.22)], false, false, 0.4, 2);
-        let delta = match_score(&n8) as i16 - match_score(&n4) as i16;
+        let delta = legacy_match_score(&n8) as i16 - legacy_match_score(&n4) as i16;
         assert!(delta >= 0, "n=8 should not lose to n=4, delta={delta}");
         assert!(delta <= 12, "appearance count must not dominate, delta={delta}");
     }
@@ -572,49 +670,97 @@ mod tests {
     fn appearance_cap_treats_11_like_8() {
         let n8 = row(&[(8, true)], true);
         let n11 = row(&[(11, true)], true);
-        assert_eq!(match_score(&n8), match_score(&n11));
+        assert_eq!(legacy_match_score(&n8), legacy_match_score(&n11));
     }
 
     #[test]
     fn limited_evidence_lowers_score() {
         let strong = row(&[(8, true)], true);
         let limited = row(&[(2, true)], true);
-        assert!(match_score(&limited) < match_score(&strong));
+        assert!(legacy_match_score(&limited) < legacy_match_score(&strong));
     }
 
     #[test]
     fn low_evidence_can_fall_below_floor() {
-        let weak = row_with(vec![], false, false, 0.05, 2);
-        assert!(match_score(&weak) < MATCH_SCORE_FLOOR);
-        assert!(!passes_match_floor(&weak));
+        let mut weak = row_with(vec![], false, false, 0.05, 2);
+        weak.eligibility.state = "held".into();
+        weak.eligibility.passed = false;
+        weak.eligibility.predicted_fit = 0.30;
+        weak.eligibility.evidence_grade = EvidenceGrade::None;
+        assert!(legacy_match_score(&weak) < MATCH_SCORE_FLOOR);
+        assert_eq!(weak.eligibility.state, "held");
+        assert!(!occupies_new(&weak));
     }
 
     #[test]
-    fn frozen_score_is_sort_tiebreak_only() {
+    fn higher_overall_total_raises_match_score() {
         let a = with_total(row(&[(8, true)], true), 0.1);
         let b = with_total(row(&[(8, true)], true), 0.9);
-        assert_eq!(match_score(&a), match_score(&b));
+        assert!(
+            legacy_match_score(&b) > legacy_match_score(&a),
+            "match % must track overall fit, got {} vs {}",
+            legacy_match_score(&a),
+            legacy_match_score(&b)
+        );
     }
 
     #[test]
-    fn same_evidence_same_score_across_pool_totals() {
-        let a = with_total(row(&[(5, true)], true), -0.2);
-        let b = with_total(row(&[(5, true)], true), 1.2);
-        assert_eq!(match_score(&a), match_score(&b));
+    fn conflicting_evidence_lowers_match_score() {
+        let clean = with_total(row(&[(5, true)], false), 0.25);
+        let mut conflicted = clean.clone();
+        conflicted.score.negative_evidence = -0.65;
+        conflicted.candidate.tmdb_id = Some(3);
+        assert!(
+            legacy_match_score(&conflicted) < legacy_match_score(&clean),
+            "negative evidence must cut displayed match, got {} vs {}",
+            legacy_match_score(&conflicted),
+            legacy_match_score(&clean)
+        );
     }
 
     #[test]
-    fn stronger_affinity_outranks_busier_collaborator() {
-        let fraser = row_with(
+    fn stronger_affinity_outranks_busier_collaborator_at_same_total() {
+        let mut fraser = row_with(
             vec![feat("cinematographer", 4, 0.45)],
             false,
             false,
-            0.01,
+            0.2,
             20,
         );
-        let zimmer = row_with(vec![feat("composer", 12, 0.22)], false, true, 0.9, 10);
-        assert!(match_score(&fraser) > match_score(&zimmer));
-        assert!(match_score(&zimmer) < EXCELLENT_BAND);
+        fraser.matched_features.push(neo_noir());
+        let zimmer = row_with(vec![feat("composer", 12, 0.22)], false, true, 0.2, 10);
+        assert!(
+            legacy_match_score(&fraser) > legacy_match_score(&zimmer),
+            "at equal overall totals, stronger craft should still win, got {} vs {}",
+            legacy_match_score(&fraser),
+            legacy_match_score(&zimmer)
+        );
+        assert!(legacy_match_score(&zimmer) < EXCELLENT_BAND);
+    }
+
+    #[test]
+    fn overall_fit_outranks_craft_alone() {
+        let mut craft_thin = row_with(
+            vec![feat("cinematographer", 8, 0.55)],
+            false,
+            false,
+            0.02,
+            75,
+        );
+        craft_thin.score.negative_evidence = -0.55;
+        let solid = row_with(
+            vec![feat("director", 4, 0.30)],
+            false,
+            false,
+            0.22,
+            76,
+        );
+        assert!(
+            legacy_match_score(&solid) > legacy_match_score(&craft_thin),
+            "strong craft with weak/conflicted overall must not top a better overall fit, got {} vs {}",
+            legacy_match_score(&craft_thin),
+            legacy_match_score(&solid)
+        );
     }
 
     #[test]
@@ -651,26 +797,34 @@ mod tests {
         );
         for row in [&boss_baby, &if_movie, &star_trek] {
             assert!(
-                match_score(row) < EXCELLENT_BAND,
+                legacy_match_score(row) < EXCELLENT_BAND,
                 "{} scored {} Excellent from collaborator frequency",
                 row.candidate.tmdb_id.unwrap(),
-                match_score(row)
+                legacy_match_score(row)
             );
             assert!(
-                match_score(row) <= RELATED_ONLY_CAP,
+                legacy_match_score(row) <= RELATED_ONLY_CAP,
                 "related-only without a DP/director/writer must stay a discovery"
             );
         }
-        let foxcatcher = row_with(
+        let mut boss_baby = boss_baby;
+        boss_baby.candidate.genres = vec!["Animation".into(), "Comedy".into(), "Family".into()];
+        let mut foxcatcher = row_with(
             vec![feat("cinematographer", 4, 0.45)],
             false,
             false,
-            0.2,
+            0.35,
             3,
         );
-        assert!(match_score(&foxcatcher) > match_score(&boss_baby));
-        assert!(match_score(&foxcatcher) > match_score(&if_movie));
-        assert!(match_score(&foxcatcher) > match_score(&star_trek));
+        foxcatcher.matched_features.push(neo_noir());
+        assert!(
+            legacy_match_score(&foxcatcher) > legacy_match_score(&boss_baby),
+            "portable DP with solid overall must beat related kids composer spam, got {} vs {}",
+            legacy_match_score(&foxcatcher),
+            legacy_match_score(&boss_baby)
+        );
+        assert!(legacy_match_score(&foxcatcher) > legacy_match_score(&if_movie));
+        assert!(legacy_match_score(&foxcatcher) > legacy_match_score(&star_trek));
     }
 
     #[test]
@@ -683,19 +837,19 @@ mod tests {
             78,
         );
         assert!(
-            match_score(&dune) <= RELATED_ONLY_CAP,
+            legacy_match_score(&dune) <= RELATED_ONLY_CAP,
             "related-only must never pad into Strong possibility, got {}",
-            match_score(&dune)
+            legacy_match_score(&dune)
         );
         assert!(
-            occupies_new(&dune) || match_score(&dune) < MATCH_SCORE_FLOOR,
+            occupies_new(&dune) || legacy_match_score(&dune) < MATCH_SCORE_FLOOR,
             "a portable DP neighbor belongs on New, not a hidden Explore shelf"
         );
         assert!(!occupies_explore(&dune));
     }
 
     #[test]
-    fn displayed_order_is_fit_then_total_then_tmdb() {
+    fn displayed_order_is_total_then_fit_then_tmdb() {
         let mut low = with_total(row(&[(8, true)], false), 0.01);
         low.eligibility.candidate_fit = 0.4;
         low.candidate.tmdb_id = Some(10);
@@ -708,12 +862,86 @@ mod tests {
     }
 
     #[test]
+    fn candidate_fit_ranks_without_changing_visible_match_score() {
+        let mut weak = row_with(vec![feat("composer", 8, 0.55)], false, false, 0.4, 81);
+        weak.eligibility.candidate_fit = 0.32;
+        let mut specific = weak.clone();
+        specific.eligibility.candidate_fit = 1.0;
+        specific.candidate.tmdb_id = Some(82);
+        assert_eq!(
+            legacy_match_score(&weak),
+            legacy_match_score(&specific),
+            "candidate fit stays an internal rank tie-break; match % uses overall total"
+        );
+        assert!(legacy_match_score(&weak) <= SINGLE_BRIDGE_CAP);
+    }
+
+    #[test]
+    fn neighbor_floor_is_discounted_by_conflict() {
+        let mut clean = row_with(vec![feat("actor", 3, 0.20)], false, true, 0.05, 501);
+        clean.candidate.genres = vec!["Drama".into()];
+        clean.candidate.sources = vec![
+            RetrievalSource {
+                kind: RetrievalKind::RelatedRecommendations,
+                label: "recommended from A".into(),
+                seed_tmdb_id: Some(1),
+                seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
+            },
+            RetrievalSource {
+                kind: RetrievalKind::RelatedRecommendations,
+                label: "recommended from B".into(),
+                seed_tmdb_id: Some(2),
+                seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
+            },
+            RetrievalSource {
+                kind: RetrievalKind::RelatedRecommendations,
+                label: "recommended from C".into(),
+                seed_tmdb_id: Some(3),
+                seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
+            },
+            RetrievalSource {
+                kind: RetrievalKind::RelatedRecommendations,
+                label: "recommended from D".into(),
+                seed_tmdb_id: Some(4),
+                seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
+            },
+        ];
+        let mut conflicted = clean.clone();
+        conflicted.candidate.tmdb_id = Some(502);
+        conflicted.score.negative_evidence = -0.65;
+        assert!(
+            legacy_match_score(&clean) >= 60,
+            "multi-seed neighbor floor should still lift a clean row, got {}",
+            legacy_match_score(&clean)
+        );
+        assert!(
+            legacy_match_score(&conflicted) < legacy_match_score(&clean),
+            "conflict must discount the neighbor floor, got {} vs {}",
+            legacy_match_score(&conflicted),
+            legacy_match_score(&clean)
+        );
+        assert!(
+            legacy_match_score(&conflicted) < 55,
+            "Playdate-class conflict must not stay propped at 62%, got {}",
+            legacy_match_score(&conflicted)
+        );
+    }
+
+    #[test]
     fn filmography_single_bridge_caps_as_discovery() {
         let be_cool = row_with(vec![feat("composer", 8, 0.55)], false, false, 0.4, 70);
         assert!(
-            match_score(&be_cool) <= SINGLE_BRIDGE_CAP,
+            legacy_match_score(&be_cool) <= SINGLE_BRIDGE_CAP,
             "single-person filmography must not read as Strong possibility, got {}",
-            match_score(&be_cool)
+            legacy_match_score(&be_cool)
         );
         let mut two_bridges = row_with(
             vec![
@@ -728,9 +956,9 @@ mod tests {
         two_bridges.matched_features[0].name = "Mauro Fiore".into();
         two_bridges.matched_features[1].name = "Wally Pfister".into();
         assert!(
-            match_score(&two_bridges) > SINGLE_BRIDGE_CAP,
+            legacy_match_score(&two_bridges) > SINGLE_BRIDGE_CAP,
             "two craft people on the same film may outrank Discovery, got {}",
-            match_score(&two_bridges)
+            legacy_match_score(&two_bridges)
         );
     }
 
@@ -739,25 +967,10 @@ mod tests {
         let thin = row_with(vec![feat("actor", 2, 0.7)], false, false, 0.5, 80);
         assert!(thin_evidence(&thin));
         assert!(
-            match_score(&thin) <= LIMITED_EVIDENCE_CAP,
+            legacy_match_score(&thin) <= LIMITED_EVIDENCE_CAP,
             "thin evidence must stay below Strong possibility, got {}",
-            match_score(&thin)
+            legacy_match_score(&thin)
         );
-    }
-
-    #[test]
-    fn candidate_fit_ranks_without_changing_visible_match_score() {
-        let mut weak = row_with(vec![feat("composer", 8, 0.55)], false, false, 0.4, 81);
-        weak.eligibility.candidate_fit = 0.32;
-        let mut specific = weak.clone();
-        specific.eligibility.candidate_fit = 1.0;
-        specific.candidate.tmdb_id = Some(82);
-        assert_eq!(
-            match_score(&weak),
-            match_score(&specific),
-            "candidate fit is an internal rank component, not visible match percent"
-        );
-        assert!(match_score(&weak) <= SINGLE_BRIDGE_CAP);
     }
 
     #[test]
@@ -773,14 +986,14 @@ mod tests {
         let mut full = prestige.clone();
         full.eligibility.candidate_fit = 1.0;
         assert_eq!(
-            match_score(&prestige),
-            match_score(&full),
+            legacy_match_score(&prestige),
+            legacy_match_score(&full),
             "Watchlist Nolan/Pfister titles must not lose a band to candidate_fit"
         );
         assert!(
-            match_score(&prestige) >= NEW_MATCH_FLOOR,
+            legacy_match_score(&prestige) >= NEW_MATCH_FLOOR,
             "Prestige-class watchlist must stay Strong possibility, got {}",
-            match_score(&prestige)
+            legacy_match_score(&prestige)
         );
     }
 
@@ -809,9 +1022,9 @@ mod tests {
         kts.eligibility.candidate_fit = 1.0;
         kts.matched_features.push(neo_noir());
         assert!(
-            match_score(&kts) >= NEW_MATCH_FLOOR,
+            legacy_match_score(&kts) >= NEW_MATCH_FLOOR,
             "Fraser + specific fit must clear Strong possibility, got {}",
-            match_score(&kts)
+            legacy_match_score(&kts)
         );
         assert!(occupies_new(&kts), "Killing Them Softly belongs on New");
         assert_eq!(filter_reason(&kts), None);
@@ -822,32 +1035,37 @@ mod tests {
         let mut antz = row_with(vec![feat("composer", 9, 0.55)], false, false, 0.4, 101);
         antz.eligibility.candidate_fit = 1.0;
         assert!(
-            match_score(&antz) <= SINGLE_BRIDGE_CAP,
-            "Powell résumé cards must stay Discovery, got {}",
-            match_score(&antz)
+            legacy_match_score(&antz) <= SINGLE_BRIDGE_CAP,
+            "Powell résumé cards must stay Discovery under legacy match, got {}",
+            legacy_match_score(&antz)
         );
-        assert!(!occupies_new(&antz));
-        assert_eq!(filter_reason(&antz).as_deref(), Some("filmography-only"));
+        // C1: Content Fit_v1 eligibility admits when state is recommended — source
+        // role (composer filmography) is not an admission veto.
+        assert!(occupies_new(&antz));
+        assert_eq!(filter_reason(&antz), None);
     }
 
     #[test]
     fn loved_similar_without_craft_does_not_occupy_new() {
         let mut raging = related_seed(vec![], &["Drama"], 1.0, 11);
         let mut kissing = related_seed(vec![], &["Romance", "Comedy"], 1.0, 15);
-        raging.eligibility.evidence_grade = EvidenceGrade::None;
-        kissing.eligibility.evidence_grade = EvidenceGrade::None;
-        raging.eligibility.passed = false;
-        kissing.eligibility.passed = false;
+        for row in [&mut raging, &mut kissing] {
+            row.eligibility.evidence_grade = EvidenceGrade::None;
+            row.eligibility.state = "held".into();
+            row.eligibility.passed = false;
+            row.eligibility.predicted_fit = 0.35;
+            row.eligibility.primary_reason = "low_fit".into();
+        }
         for row in [&raging, &kissing] {
             assert!(
-                match_score(row) < NEW_MATCH_FLOOR,
+                legacy_match_score(row) < NEW_MATCH_FLOOR,
                 "TMDB similar-to must not be padded to Strong possibility, got {} for {}",
-                match_score(row),
+                legacy_match_score(row),
                 row.candidate.tmdb_id.unwrap()
             );
             assert!(!occupies_new(row));
         }
-        assert_eq!(filter_reason(&kissing).as_deref(), Some("weak-evidence"));
+        assert_eq!(filter_reason(&kissing).as_deref(), Some("low_fit"));
     }
 
     #[test]
@@ -863,9 +1081,9 @@ mod tests {
         insomnia.matched_features.push(feat("director", 5, 0.38));
         insomnia.matched_features.push(neo_noir());
         assert!(
-            match_score(&insomnia) >= NEW_MATCH_FLOOR,
+            legacy_match_score(&insomnia) >= NEW_MATCH_FLOOR,
             "Pfister/Fiore filmography with a specific match must not stall at Discovery, got {}",
-            match_score(&insomnia)
+            legacy_match_score(&insomnia)
         );
         assert!(occupies_new(&insomnia));
     }
@@ -879,6 +1097,9 @@ mod tests {
             12,
         );
         feet.eligibility.evidence_grade = EvidenceGrade::None;
+        feet.eligibility.state = "held".into();
+feet.eligibility.passed = false;
+feet.eligibility.predicted_fit = 0.35;
         let trek = related_seed(
             vec![feat("composer", 12, 0.24)],
             &["Science Fiction", "Action"],
@@ -892,19 +1113,22 @@ mod tests {
             14,
         );
         sponge.eligibility.evidence_grade = EvidenceGrade::None;
+        sponge.eligibility.state = "held".into();
+sponge.eligibility.passed = false;
+sponge.eligibility.predicted_fit = 0.35;
         for row in [&feet, &sponge] {
             assert!(
-                match_score(row) <= RELATED_ONLY_CAP,
+                legacy_match_score(row) <= RELATED_ONLY_CAP,
                 "{} scored {} and would occupy New",
                 row.candidate.tmdb_id.unwrap(),
-                match_score(row)
+                legacy_match_score(row)
             );
             assert!(!occupies_new(row));
         }
         assert!(
-            occupies_new(&trek) || match_score(&trek) < MATCH_SCORE_FLOOR,
+            occupies_new(&trek) || legacy_match_score(&trek) < MATCH_SCORE_FLOOR,
             "composer-linked Star Trek neighbors belong on New, got {}",
-            match_score(&trek)
+            legacy_match_score(&trek)
         );
         assert!(!occupies_explore(&trek));
     }
@@ -925,6 +1149,8 @@ mod tests {
             label: "similar to a catalog title".into(),
             seed_tmdb_id: None,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         });
         assert!(occupies_new(&mixed), "qualifying DP filmography must occupy New without a Related seed");
         assert!(!occupies_explore(&mixed));
@@ -939,24 +1165,32 @@ mod tests {
                 label: "Composer Name".into(),
                 seed_tmdb_id: None,
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::RelatedRecommendations,
                 label: "Loved One".into(),
                 seed_tmdb_id: Some(1),
                 seed_rating: Some(5.0),
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::RelatedRecommendations,
                 label: "Loved Two".into(),
                 seed_tmdb_id: Some(2),
                 seed_rating: Some(4.5),
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::RelatedRecommendations,
                 label: "Loved Three".into(),
                 seed_tmdb_id: Some(3),
                 seed_rating: Some(4.0),
+                similarity: None,
+                neighbor_rank: None,
             },
         ];
         mixed.eligibility.candidate_fit = 0.7;
@@ -966,7 +1200,8 @@ mod tests {
 
         mixed.candidate.sources.truncate(2);
         assert!(!mixed_recommendation_corroboration(&mixed));
-        assert!(!occupies_new(&mixed));
+        // C1: corroboration is diagnostic only — Recommended state still occupies New.
+        assert!(occupies_new(&mixed));
     }
 
     #[test]
@@ -974,14 +1209,19 @@ mod tests {
         let mut mixed = row_with(vec![feat("composer", 9, 0.55)], false, false, 0.4, 101);
         mixed.eligibility.candidate_fit = 1.0;
         mixed.eligibility.evidence_grade = EvidenceGrade::None;
+        mixed.eligibility.state = "held".into();
+mixed.eligibility.passed = false;
+mixed.eligibility.predicted_fit = 0.35;
         mixed.candidate.sources.push(RetrievalSource {
             kind: RetrievalKind::Related,
             label: "similar to Pulp Fiction".into(),
             seed_tmdb_id: Some(680),
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         });
         assert!(!occupies_new(&mixed));
-        assert!(match_score(&mixed) <= SINGLE_BRIDGE_CAP || occupies_explore(&mixed));
+        assert!(legacy_match_score(&mixed) <= SINGLE_BRIDGE_CAP || occupies_explore(&mixed));
     }
 
     #[test]
@@ -989,22 +1229,23 @@ mod tests {
         let mut writer = row_with(vec![feat("writer", 3, 0.4)], false, false, 0.4, 88);
         writer.eligibility.candidate_fit = 1.0;
         assert!(
-            match_score(&writer) < NEW_MATCH_FLOOR,
+            legacy_match_score(&writer) < NEW_MATCH_FLOOR,
             "writer-only filmography must not use the 70 pad, got {}",
-            match_score(&writer)
+            legacy_match_score(&writer)
         );
-        assert!(!occupies_new(&writer));
+        // C1: high Content fit admits regardless of craft role.
+        assert!(occupies_new(&writer));
     }
 
     #[test]
     fn related_60_69_occupies_new() {
         let dogs = related_seed(vec![feat("director", 8, 0.5)], &["Crime", "Thriller"], 1.0, 500);
         assert!(
-            match_score(&dogs) <= RELATED_ONLY_CAP,
+            legacy_match_score(&dogs) <= RELATED_ONLY_CAP,
             "Reservoir Dogs-class similar-to must not land at exact 70, got {}",
-            match_score(&dogs)
+            legacy_match_score(&dogs)
         );
-        if match_score(&dogs) >= MATCH_SCORE_FLOOR {
+        if legacy_match_score(&dogs) >= MATCH_SCORE_FLOOR {
             assert!(occupies_new(&dogs));
             assert!(!occupies_explore(&dogs));
             assert_eq!(placement(&dogs), "new");
@@ -1037,7 +1278,7 @@ mod tests {
         related.candidate.runtime = Some(110);
         related.candidate.vote_count = Some(200);
         assert!(!unreleased_display_row(&related));
-        if match_score(&related) >= MATCH_SCORE_FLOOR {
+        if legacy_match_score(&related) >= MATCH_SCORE_FLOOR {
             assert!(occupies_new(&related));
         }
         let mut filmography = row_with(
@@ -1086,9 +1327,9 @@ mod tests {
         sketch.candidate.genres = vec!["Crime".into(), "TV Movie".into()];
         sketch.eligibility.candidate_fit = 1.0;
         assert!(
-            match_score(&sketch) <= SINGLE_BRIDGE_CAP,
+            legacy_match_score(&sketch) <= SINGLE_BRIDGE_CAP,
             "TV movies must not be padded onto New, got {}",
-            match_score(&sketch)
+            legacy_match_score(&sketch)
         );
         assert!(!occupies_new(&sketch));
         assert!(!occupies_explore(&sketch));
@@ -1106,16 +1347,16 @@ mod tests {
         blue.candidate.title = "Out of the Blue".into();
         blue.eligibility.candidate_fit = 1.0;
         assert!(
-            match_score(&blue) <= RELATED_ONLY_CAP,
-            "a DP credit alone must not read as Very likely, got {}",
-            match_score(&blue)
+            legacy_match_score(&blue) <= RELATED_ONLY_CAP,
+            "a DP credit alone must not read as Very likely under legacy match, got {}",
+            legacy_match_score(&blue)
         );
-        assert!(!occupies_new(&blue));
-        assert!(!occupies_explore(&blue));
+        // C1: Content Fit_v1 state admits; corroboration is no longer required.
+        assert!(occupies_new(&blue));
     }
 
     #[test]
-    fn non_watchlist_never_says_very_likely() {
+    fn excellent_overall_fit_can_exceed_former_new_cap() {
         let mut kts = row_with(
             vec![feat("cinematographer", 4, 0.47)],
             false,
@@ -1127,9 +1368,9 @@ mod tests {
         kts.matched_features.push(neo_noir());
         assert!(occupies_new(&kts));
         assert!(
-            match_score(&kts) <= NON_WATCHLIST_BAND_CAP,
-            "New is Strong possibility, not Very likely, got {}",
-            match_score(&kts)
+            legacy_match_score(&kts) >= 80,
+            "an excellent corroborated New fit may exceed the former 79 cap, got {}",
+            legacy_match_score(&kts)
         );
         let mut dune = row_with(
             vec![feat("cinematographer", 4, 0.47)],
@@ -1141,9 +1382,9 @@ mod tests {
         dune.eligibility.candidate_fit = 1.0;
         dune.matched_features.push(neo_noir());
         assert!(
-            match_score(&dune) > NON_WATCHLIST_BAND_CAP,
+            legacy_match_score(&dune) >= 80,
             "watchlist may stay Very likely, got {}",
-            match_score(&dune)
+            legacy_match_score(&dune)
         );
     }
 
@@ -1162,12 +1403,16 @@ mod tests {
                 label: "recommended from Rogue One: A Star Wars Story".into(),
                 seed_tmdb_id: Some(330_459),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::RelatedRecommendations,
                 label: "recommended from Avatar: Fire and Ash".into(),
                 seed_tmdb_id: Some(835_33),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
         ];
         solo.eligibility.candidate_fit = 1.0;
@@ -1188,9 +1433,14 @@ mod tests {
             label: "recommended from The Hunger Games: Catching Fire".into(),
             seed_tmdb_id: Some(101_299),
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }];
         insurgent.candidate.title = "Insurgent".into();
         insurgent.eligibility.evidence_grade = EvidenceGrade::None;
+        insurgent.eligibility.state = "held".into();
+insurgent.eligibility.passed = false;
+insurgent.eligibility.predicted_fit = 0.35;
         assert!(related_only(&insurgent));
         assert!(!occupies_new(&insurgent));
     }
@@ -1204,10 +1454,12 @@ mod tests {
             label: "similar to Last Night in Soho".into(),
             seed_tmdb_id: Some(565_123),
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }];
         assert!(related_only(&similar));
-        assert!(match_score(&similar) <= RELATED_ONLY_CAP);
-        if match_score(&similar) >= MATCH_SCORE_FLOOR {
+        assert!(legacy_match_score(&similar) <= RELATED_ONLY_CAP);
+        if legacy_match_score(&similar) >= MATCH_SCORE_FLOOR {
             assert!(occupies_new(&similar));
         }
     }
@@ -1221,6 +1473,9 @@ mod tests {
             351_837,
         );
         kids.eligibility.evidence_grade = EvidenceGrade::None;
+        kids.eligibility.state = "held".into();
+kids.eligibility.passed = false;
+kids.eligibility.predicted_fit = 0.35;
         assert!(!occupies_new(&kids));
         assert!(!occupies_explore(&kids));
     }
@@ -1236,34 +1491,42 @@ mod tests {
                 label: "recommended from Rogue One: A Star Wars Story".into(),
                 seed_tmdb_id: Some(330_459),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::RelatedRecommendations,
                 label: "recommended from Avatar".into(),
                 seed_tmdb_id: Some(19_995),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::RelatedRecommendations,
                 label: "recommended from Interstellar".into(),
                 seed_tmdb_id: Some(157_336),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::RelatedRecommendations,
                 label: "recommended from The Mandalorian and Grogu".into(),
                 seed_tmdb_id: Some(1_228_710),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
         ];
         assert!(
-            match_score(&trek) >= MATCH_SCORE_FLOOR,
+            legacy_match_score(&trek) >= MATCH_SCORE_FLOOR,
             "Rogue One/Avatar/Interstellar recs must not sit at 5%, got {}",
-            match_score(&trek)
+            legacy_match_score(&trek)
         );
         assert!(occupies_new(&trek));
         assert!(!occupies_explore(&trek));
-        assert!(match_score(&trek) <= RELATED_ONLY_CAP);
+        assert!(legacy_match_score(&trek) <= RELATED_ONLY_CAP);
     }
 
     #[test]
@@ -1279,14 +1542,138 @@ mod tests {
             label: "recommended from Tony".into(),
             seed_tmdb_id: Some(1_329_016),
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }];
         curves.candidate.title = "Real Women Have Curves".into();
         curves.eligibility.evidence_grade = EvidenceGrade::None;
+        curves.eligibility.state = "held".into();
+curves.eligibility.passed = false;
+curves.eligibility.predicted_fit = 0.35;
+        curves.score.total = 0.02;
+        curves.score.negative_evidence = -0.2;
         assert!(
-            match_score(&curves) < MATCH_SCORE_FLOOR,
+            legacy_match_score(&curves) < MATCH_SCORE_FLOOR,
             "one weak seed must not mint a New card, got {}",
-            match_score(&curves)
+            legacy_match_score(&curves)
         );
         assert!(!occupies_new(&curves));
+    }
+
+    #[test]
+    fn web_discovery_can_occupy_new_without_craft_grade() {
+        let mut found = row_with(
+            vec![feat("director", 3, 0.28)],
+            false,
+            false,
+            0.18,
+            88_001,
+        );
+        found.candidate.sources = vec![RetrievalSource {
+            kind: RetrievalKind::Discovery,
+            label: "neo-noir atmospheric thrillers like Zodiac".into(),
+            seed_tmdb_id: None,
+            seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
+        }];
+        found.eligibility.evidence_grade = EvidenceGrade::None;
+        found.eligibility.state = "recommended".into();
+        found.eligibility.passed = true;
+        found.eligibility.predicted_fit = 0.72;
+        found.eligibility.primary_reason = "recommended".into();
+        found.candidate.genres = vec!["Crime".into(), "Thriller".into()];
+        assert!(
+            occupies_new(&found),
+            "targeted web discovery must be allowed onto New without a craft grade"
+        );
+        assert_eq!(filter_reason(&found), None);
+    }
+
+    #[test]
+    fn below_match_floor_does_not_occupy_new() {
+        let mut weak = related_seed(vec![feat("director", 8, 0.5)], &["Crime"], 1.0, 501);
+        weak.score.total = 0.02;
+        weak.matched_features.clear();
+        weak.positive_features.clear();
+        weak.person_keys.clear();
+        weak.eligibility.state = "held".into();
+        weak.eligibility.passed = false;
+        weak.eligibility.predicted_fit = 0.30;
+        weak.eligibility.primary_reason = "low_fit".into();
+        assert!(legacy_match_score(&weak) < MATCH_SCORE_FLOOR);
+        assert!(!occupies_new(&weak));
+        assert_eq!(filter_reason(&weak).as_deref(), Some("low_fit"));
+    }
+
+    #[test]
+    fn related_only_with_weak_semantic_still_occupies_when_match_clears() {
+        // Semantic demotion handles dislike-aligned Medium grades; occupancy
+        // no longer requires a high semantic floor or the board collapses.
+        let mut dogs = related_seed(vec![feat("director", 8, 0.5)], &["Crime", "Thriller"], 1.0, 502);
+        dogs.score.semantic_coverage = true;
+        dogs.score.semantic_fit = 0.50;
+        dogs.score.total = 0.4;
+        if legacy_match_score(&dogs) >= MATCH_SCORE_FLOOR {
+            assert!(occupies_new(&dogs));
+        }
+    }
+
+    #[test]
+    fn related_only_with_strong_semantic_can_occupy_new() {
+        let mut dogs = related_seed(vec![feat("director", 8, 0.5)], &["Crime", "Thriller"], 1.0, 503);
+        dogs.score.semantic_coverage = true;
+        dogs.score.semantic_fit = 0.62;
+        dogs.score.total = 0.4;
+        if legacy_match_score(&dogs) >= MATCH_SCORE_FLOOR {
+            assert!(occupies_new(&dogs));
+        }
+    }
+
+    #[test]
+    fn actor_loyalty_filmography_occupies_new() {
+        let mut rocky = row_with(
+            vec![feat("actor", 5, 0.55)],
+            false,
+            false,
+            0.35,
+            1374,
+        );
+        rocky.matched_features[0].recommendation_mean = 0.55;
+        rocky.matched_features[0].name = "Michael B. Jordan".into();
+        rocky.candidate.genres = vec!["Drama".into(), "Action".into()];
+        rocky.eligibility.candidate_fit = 0.8;
+        assert!(
+            !filmography_single_bridge(&rocky),
+            "repeated actor preference must not be treated as thin résumé"
+        );
+        if legacy_match_score(&rocky) >= MATCH_SCORE_FLOOR {
+            assert!(
+                occupies_new(&rocky),
+                "Creed-class actor loyalty should surface unseen Rocky/lead work"
+            );
+        }
+    }
+
+    #[test]
+    fn director_animation_loyalty_filmography_occupies_new() {
+        let mut wildwood = row_with(
+            vec![feat("director", 5, 0.55)],
+            false,
+            false,
+            0.35,
+            88_002,
+        );
+        wildwood.matched_features[0].recommendation_mean = 0.55;
+        wildwood.matched_features[0].name = "Travis Knight".into();
+        wildwood.candidate.genres = vec!["Animation".into(), "Family".into(), "Adventure".into()];
+        wildwood.eligibility.candidate_fit = 0.8;
+        assert!(!filmography_single_bridge(&wildwood));
+        if legacy_match_score(&wildwood) >= MATCH_SCORE_FLOOR {
+            assert!(
+                occupies_new(&wildwood),
+                "Laika/Knight loyalty must occupy New for unseen filmography"
+            );
+        }
     }
 }

@@ -138,6 +138,8 @@ mod tests {
                     label: "x".into(),
                     seed_tmdb_id: Some(1),
                     seed_rating: None,
+                    similarity: None,
+                    neighbor_rank: None,
                 }],
                 directors: vec![director.into()],
                 genres: vec!["Crime".into()],
@@ -145,6 +147,7 @@ mod tests {
                 media_kind: crate::taste::retrieve::MediaKind::Movie,
                 runtime: Some(110),
                 vote_count: Some(400),
+                semantic_cluster: None,
             },
             score: CandidateScore {
                 content: total,
@@ -174,6 +177,7 @@ mod tests {
                 passed_because: vec!["fixture".into()],
                 candidate_fit: 1.0,
                 evidence_grade: crate::taste::explain::EvidenceGrade::None,
+                ..Default::default()
             },
         }
     }
@@ -217,6 +221,8 @@ mod tests {
             label: "Greig Fraser".into(),
             seed_tmdb_id: None,
             seed_rating: None,
+            similarity: None,
+            neighbor_rank: None,
         }];
         craft.matched_features = vec![
             crate::taste::explain::MatchedFeatureView {
@@ -254,12 +260,16 @@ mod tests {
                 label: "recommended from Rogue One: A Star Wars Story".into(),
                 seed_tmdb_id: Some(330_459),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
             RetrievalSource {
                 kind: RetrievalKind::RelatedRecommendations,
                 label: "recommended from Avatar: Fire and Ash".into(),
                 seed_tmdb_id: Some(835_33),
                 seed_rating: None,
+                similarity: None,
+                neighbor_rank: None,
             },
         ];
         neighbor.matched_features = vec![crate::taste::explain::MatchedFeatureView {

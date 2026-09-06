@@ -53,7 +53,7 @@ function likedIds(feedback: TasteFeedback[] | undefined) {
   );
 }
 
-type TasteSort = "match" | "title" | "year";
+type TasteSort = "recommended" | "match" | "title" | "year";
 type TasteFilter = "all" | "50" | "60" | "70";
 type TasteFeedbackOptions = {
   reason?: "already_seen_disliked" | "not_this_kind" | "wrong_connection" | "not_in_the_mood";
@@ -69,7 +69,10 @@ type OpenTastePopover = {
   openedWithKeyboard: boolean;
 };
 
+const FEATURED_MAX = 12;
+
 const TASTE_SORTS: { id: TasteSort; label: string }[] = [
+  { id: "recommended", label: "Recommended" },
   { id: "match", label: "Highest match" },
   { id: "title", label: "Title A–Z" },
   { id: "year", label: "Newest" },
@@ -101,15 +104,15 @@ function matchTone(pick: TastePick) {
 }
 
 function sortTastePicks(picks: TastePick[], sort: TasteSort, filter: TasteFilter) {
-  return picks
-    .filter((pick) => filter === "all" || matchValue(pick) >= Number(filter))
-    .sort((a, b) => {
-      if (sort === "title") return a.title.localeCompare(b.title);
-      if (sort === "year") {
-        return (b.year ?? -Infinity) - (a.year ?? -Infinity);
-      }
-      return matchValue(b) - matchValue(a);
-    });
+  const filtered = picks.filter((pick) => filter === "all" || matchValue(pick) >= Number(filter));
+  if (sort === "recommended") return filtered;
+  return filtered.sort((a, b) => {
+    if (sort === "title") return a.title.localeCompare(b.title);
+    if (sort === "year") {
+      return (b.year ?? -Infinity) - (a.year ?? -Infinity);
+    }
+    return matchValue(b) - matchValue(a);
+  });
 }
 
 function listCount(shown: number, total: number) {
@@ -380,17 +383,42 @@ function TasteLists({
   const { neu, watch } = sectionPicks(report);
   const visibleNew = neu.filter((p) => !hidden.has(pickKey(p)));
   const visibleWatch = watch.filter((p) => !hidden.has(pickKey(p)));
-  const [sort, setSort] = useState<TasteSort>("match");
+  const [sort, setSort] = useState<TasteSort>("recommended");
   const [filter, setFilter] = useState<TasteFilter>("all");
   const [openPopover, setOpenPopover] = useState<OpenTastePopover | null>(null);
   const sortedNew = sortTastePicks(visibleNew, sort, filter);
   const sortedWatch = sortTastePicks(visibleWatch, sort, filter);
+  const showFeaturedSplit = sort === "recommended" && filter === "all" && sortedNew.length > FEATURED_MAX;
+  const featuredNew = showFeaturedSplit ? sortedNew.slice(0, FEATURED_MAX) : sortedNew;
+  const moreNew = showFeaturedSplit ? sortedNew.slice(FEATURED_MAX) : [];
   const controls = neu.length || watch.length ? (
     <div className="flat-menu-toolbar taste-list-toolbar" role="group" aria-label="Recommendation list controls">
       <Menu label="Sort" value={sort} options={TASTE_SORTS} onChange={(id) => setSort(id)} />
       <Menu label="Match" value={filter} options={TASTE_FILTERS} onChange={(id) => setFilter(id)} />
     </div>
   ) : null;
+
+  function renderPickList(picks: TastePick[]) {
+    return (
+      <ul className="rec-list taste-rec-list">
+        {picks.map((pick) => (
+          <TastePickCard
+            key={pickKey(pick)}
+            pick={pick}
+            interested={Boolean(pick.tmdbId && interested.has(pick.tmdbId))}
+            onSelectFilm={onSelectFilm}
+            onFeedback={onFeedback}
+            openPopover={openPopover?.key === pickKey(pick) ? openPopover : null}
+            onOpenPopover={(kind, trigger, openedWithKeyboard) =>
+              setOpenPopover({ key: pickKey(pick), kind, trigger, openedWithKeyboard })
+            }
+            onClosePopover={() => setOpenPopover(null)}
+          />
+        ))}
+      </ul>
+    );
+  }
+
   return (
     <>
       {neu.length ? (
@@ -403,22 +431,16 @@ function TasteLists({
             {controls}
           </div>
           {sortedNew.length ? (
-            <ul className="rec-list taste-rec-list">
-              {sortedNew.map((pick) => (
-                <TastePickCard
-                  key={pickKey(pick)}
-                  pick={pick}
-                  interested={Boolean(pick.tmdbId && interested.has(pick.tmdbId))}
-                  onSelectFilm={onSelectFilm}
-                  onFeedback={onFeedback}
-                  openPopover={openPopover?.key === pickKey(pick) ? openPopover : null}
-                  onOpenPopover={(kind, trigger, openedWithKeyboard) =>
-                    setOpenPopover({ key: pickKey(pick), kind, trigger, openedWithKeyboard })
-                  }
-                  onClosePopover={() => setOpenPopover(null)}
-                />
-              ))}
-            </ul>
+            showFeaturedSplit ? (
+              <>
+                <p className="muted pad taste-band-label">Featured</p>
+                {renderPickList(featuredNew)}
+                <p className="muted pad taste-band-label">More for you</p>
+                {renderPickList(moreNew)}
+              </>
+            ) : (
+              renderPickList(sortedNew)
+            )
           ) : (
             <p className="muted pad">
               {visibleNew.length ? "No new films match this filter." : "All new films are hidden."}
@@ -449,22 +471,7 @@ function TasteLists({
             <span className="muted">{listCount(sortedWatch.length, visibleWatch.length)} picks</span>
           </div>
           {sortedWatch.length ? (
-            <ul className="rec-list taste-rec-list">
-              {sortedWatch.map((pick) => (
-                <TastePickCard
-                  key={pickKey(pick)}
-                  pick={pick}
-                  interested={Boolean(pick.tmdbId && interested.has(pick.tmdbId))}
-                  onSelectFilm={onSelectFilm}
-                  onFeedback={onFeedback}
-                  openPopover={openPopover?.key === pickKey(pick) ? openPopover : null}
-                  onOpenPopover={(kind, trigger, openedWithKeyboard) =>
-                    setOpenPopover({ key: pickKey(pick), kind, trigger, openedWithKeyboard })
-                  }
-                  onClosePopover={() => setOpenPopover(null)}
-                />
-              ))}
-            </ul>
+            renderPickList(sortedWatch)
           ) : (
             <p className="muted pad">No watchlist films match this filter.</p>
           )}

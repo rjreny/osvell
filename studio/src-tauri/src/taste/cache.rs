@@ -455,6 +455,8 @@ mod tests {
                 keywords: vec![],
                 recommendations: vec![],
                 similar: vec![],
+                collection_name: None,
+                collection: vec![],
                 runtime: None,
                 poster: None,
                 vote_count: None,
@@ -486,6 +488,8 @@ mod tests {
                     label: "Nolan".into(),
                     seed_tmdb_id: None,
                     seed_rating: None,
+                    similarity: None,
+                    neighbor_rank: None,
                 }],
                 directors: vec!["Nolan".into()],
                 genres: vec!["Drama".into()],
@@ -493,6 +497,7 @@ mod tests {
                 media_kind: MediaKind::Movie,
                 runtime: Some(110),
                 vote_count: Some(400),
+                semantic_cluster: None,
             },
             score: CandidateScore {
                 content: 0.5,
@@ -547,6 +552,7 @@ mod tests {
                 passed_because: vec!["craft".into()],
                 candidate_fit: 1.0,
                 evidence_grade: crate::taste::explain::EvidenceGrade::Medium,
+                ..Default::default()
             },
         }
     }
@@ -585,6 +591,15 @@ mod tests {
                 dimensions: vec![],
             },
         }
+    }
+
+    #[test]
+    fn old_person_identity_snapshot_is_not_usable() {
+        let db = Database::in_memory().unwrap();
+        let mut snap = base_snap(&db, &[], &[]);
+        assert!(snapshot_usable(&db, &snap, &[], &[]).unwrap());
+        snap.fingerprints.algorithm_version = "taste-workspace-23-effective-viewings".into();
+        assert!(!snapshot_usable(&db, &snap, &[], &[]).unwrap());
     }
 
     #[test]

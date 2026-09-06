@@ -194,6 +194,11 @@ fn tmdb_get(key: &str, path_and_query: &str) -> Result<String, String> {
         .map_err(|_| format!("TMDB {}: response read failed", tmdb_path_label(path_and_query)))
 }
 
+/// Public wrapper for Taste universe harvest (discover pages, etc.).
+pub fn tmdb_get_public(key: &str, path_and_query: &str) -> Result<String, String> {
+    tmdb_get(key, path_and_query)
+}
+
 fn tmdb_path_label(path_and_query: &str) -> &str {
     path_and_query.split('?').next().unwrap_or(path_and_query)
 }
@@ -1932,6 +1937,32 @@ pub struct PersonCredit {
     pub year: Option<i32>,
     #[serde(default)]
     pub job: String,
+    /// TMDB cast billing order when job is Actor. Lower is more prominent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<i64>,
+}
+
+/// Cache envelope. Pre-v2 payloads were a bare `Vec<PersonCredit>` of crew only
+/// and must be refetched so actor filmography can populate.
+pub const PERSON_CREDITS_CACHE_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PersonCreditsCache {
+    pub version: u32,
+    pub credits: Vec<PersonCredit>,
+}
+
+fn read_person_credits_cache(raw: &str) -> Option<Vec<PersonCredit>> {
+    if let Ok(wrapped) = serde_json::from_str::<PersonCreditsCache>(raw) {
+        if wrapped.version == PERSON_CREDITS_CACHE_VERSION
+            && wrapped.credits.iter().all(|i| !i.job.trim().is_empty())
+        {
+            return Some(wrapped.credits);
+        }
+        return None;
+    }
+    // Legacy bare array (crew-only era) — force a refresh.
+    None
 }
 
 pub fn person_movie_credits(db: &Database, person_id: i64) -> Result<Vec<PersonCredit>, String> {
@@ -1958,10 +1989,8 @@ pub fn person_movie_credits_with_force(
             .map_err(|e| e.to_string())?
         {
             if fresh == 1 {
-                if let Ok(items) = serde_json::from_str::<Vec<PersonCredit>>(&raw) {
-                    if items.iter().all(|i| !i.job.trim().is_empty()) {
-                        return Ok(items);
-                    }
+                if let Some(items) = read_person_credits_cache(&raw) {
+                    return Ok(items);
                 }
             }
         }
@@ -1971,6 +2000,27 @@ pub fn person_movie_credits_with_force(
     let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
     let mut items = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    if let Some(arr) = v["cast"].as_array() {
+        for row in arr {
+            let Some(lib) = library_item_from_movie_value(row) else {
+                continue;
+            };
+            let Some(id) = parse_tmdb_ref(&lib.id) else {
+                continue;
+            };
+            let job = "Actor";
+            if !seen.insert((id, job.to_string())) {
+                continue;
+            }
+            items.push(PersonCredit {
+                tmdb_id: id,
+                title: lib.title,
+                year: lib.year,
+                job: job.to_string(),
+                order: row["order"].as_i64(),
+            });
+        }
+    }
     if let Some(arr) = v["crew"].as_array() {
         for row in arr {
             let job = row["job"].as_str().unwrap_or("").trim();
@@ -1991,11 +2041,31 @@ pub fn person_movie_credits_with_force(
                 title: lib.title,
                 year: lib.year,
                 job: job.to_string(),
+                order: None,
             });
         }
     }
-    items.truncate(80);
-    let json = serde_json::to_string(&items).unwrap_or_else(|_| "[]".into());
+    // Prefer billed cast / known crew roles; keep a bounded filmography page.
+    items.sort_by(|a, b| {
+        let a_actor = a.job == "Actor";
+        let b_actor = b.job == "Actor";
+        match (a_actor, b_actor) {
+            (true, true) => a
+                .order
+                .unwrap_or(i64::MAX)
+                .cmp(&b.order.unwrap_or(i64::MAX))
+                .then(a.tmdb_id.cmp(&b.tmdb_id)),
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => a.tmdb_id.cmp(&b.tmdb_id),
+        }
+    });
+    items.truncate(120);
+    let wrapped = PersonCreditsCache {
+        version: PERSON_CREDITS_CACHE_VERSION,
+        credits: items.clone(),
+    };
+    let json = serde_json::to_string(&wrapped).unwrap_or_else(|_| "[]".into());
     let _ = db.conn().execute(
         "INSERT OR REPLACE INTO person_credits(person_id, credits_json, fetched_at)
          VALUES (?1, ?2, datetime('now'))",
@@ -2111,10 +2181,16 @@ fn related_list(v: &serde_json::Value, key: &str, take: usize) -> Vec<LibraryIte
     items
 }
 
+/// How many TMDB recommendation/similar neighbors to persist per film.
+/// Taste retrieval reads from this stored list; keeping it shallow caps discovery.
+pub const RELATED_LIST_STORE: usize = 20;
+/// Previous persist cap. Lists at this size are treated as shallow and refreshed.
+pub const RELATED_LIST_LEGACY_CAP: usize = 12;
+
 fn related_lists(v: &serde_json::Value) -> (Vec<LibraryItem>, Vec<LibraryItem>) {
     (
-        related_list(v, "recommendations", 12),
-        related_list(v, "similar", 12),
+        related_list(v, "recommendations", RELATED_LIST_STORE),
+        related_list(v, "similar", RELATED_LIST_STORE),
     )
 }
 
@@ -2734,16 +2810,25 @@ mod tests {
             Ok(items) => {
                 assert!(
                     items.is_empty() || items.iter().any(|i| i.title != "SENTINEL"),
-                    "jobless person-credit cache must not be reused"
+                    "legacy/jobless person-credit cache must not be reused"
                 );
             }
             Err(_) => {}
         }
+        let wrapped = serde_json::json!({
+            "version": PERSON_CREDITS_CACHE_VERSION,
+            "credits": [{
+                "tmdb_id": 999001,
+                "title": "SENTINEL",
+                "year": 1999,
+                "job": "Director"
+            }]
+        });
         db.conn()
             .execute(
                 "INSERT OR REPLACE INTO person_credits(person_id, credits_json, fetched_at)
-                 VALUES (1, '[{\"tmdb_id\":999001,\"title\":\"SENTINEL\",\"year\":1999,\"job\":\"Director\"}]', datetime('now'))",
-                [],
+                 VALUES (1, ?1, datetime('now'))",
+                params![wrapped.to_string()],
             )
             .unwrap();
         let cached = person_movie_credits(&db, 1).unwrap();
@@ -2754,6 +2839,29 @@ mod tests {
             Ok(items) => assert!(items.iter().all(|i| i.title != "SENTINEL")),
             Err(_) => {}
         }
+    }
+
+    #[test]
+    fn person_credits_cache_rejects_legacy_crew_only_array() {
+        let legacy = r#"[{"tmdb_id":1,"title":"Crew Only","year":2000,"job":"Writer"}]"#;
+        assert!(
+            read_person_credits_cache(legacy).is_none(),
+            "pre-v2 cast-blind caches must miss so actors refetch"
+        );
+        let wrapped = PersonCreditsCache {
+            version: PERSON_CREDITS_CACHE_VERSION,
+            credits: vec![PersonCredit {
+                tmdb_id: 1,
+                title: "Both".into(),
+                year: Some(2001),
+                job: "Actor".into(),
+                order: Some(0),
+            }],
+        };
+        let raw = serde_json::to_string(&wrapped).unwrap();
+        let hit = read_person_credits_cache(&raw).unwrap();
+        assert_eq!(hit[0].job, "Actor");
+        assert_eq!(hit[0].order, Some(0));
     }
 }
 

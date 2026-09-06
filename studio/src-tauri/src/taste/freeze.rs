@@ -2,7 +2,7 @@
 //! recommendation-workspace epic. Workspace code must not change these values.
 
 /// Formula id mixed into scoring fingerprints. Bump only when W_* change.
-pub const FROZEN_FORMULA_ID: &str = "w-content-0.45-tmdb-0.20-friend-0.15-recent-0.10-watchlist-0.05-novelty-0.05-negative-0.35-semantic-blend-0.35";
+pub const FROZEN_FORMULA_ID: &str = "w-content-0.45-tmdb-0.20-friend-0.15-recent-0.10-watchlist-0.05-novelty-0.00-negative-0.35-semantic-blend-0.35";
 
 #[cfg(test)]
 mod tests {
@@ -22,12 +22,12 @@ mod tests {
         assert_eq!(W_FRIEND, 0.15);
         assert_eq!(W_RECENT, 0.10);
         assert_eq!(W_WATCHLIST, 0.05);
-        assert_eq!(W_NOVELTY, 0.05);
+        assert_eq!(W_NOVELTY, 0.0);
         assert_eq!(W_NEGATIVE, 0.35);
         assert_eq!(crate::taste::score::W_SEMANTIC, 0.35);
         assert_eq!(
             FROZEN_FORMULA_ID,
-            "w-content-0.45-tmdb-0.20-friend-0.15-recent-0.10-watchlist-0.05-novelty-0.05-negative-0.35-semantic-blend-0.35"
+            "w-content-0.45-tmdb-0.20-friend-0.15-recent-0.10-watchlist-0.05-novelty-0.00-negative-0.35-semantic-blend-0.35"
         );
     }
 
