@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="112" viewBox="0 0 960 112" role="img" aria-labelledby="title desc">
+  <title id="title">How Taste works</title>
+  <desc id="desc">Your history shapes a taste profile. Candidates are found and scored, critiqued and verified, then presented as picks with reasons.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M1 1 6 4 1 7" fill="none" stroke="#8c9aaa" stroke-width="1.5"/>
+    </marker>
+  </defs>
+  <rect width="960" height="112" rx="12" fill="#0d1117"/>
+  <g fill="none" stroke="#8c9aaa" stroke-width="1.5" marker-end="url(#arrow)">
+    <path d="M186 56h12"/><path d="M376 56h12"/><path d="M566 56h12"/><path d="M756 56h12"/>
+  </g>
+  <g stroke="#354455" fill="#17212d">
+    <rect x="12" y="18" width="174" height="76" rx="9"/>
+    <rect x="202" y="18" width="174" height="76" rx="9"/>
+    <rect x="392" y="18" width="174" height="76" rx="9"/>
+    <rect x="582" y="18" width="174" height="76" rx="9"/>
+    <rect x="772" y="18" width="176" height="76" rx="9" fill="#153428" stroke="#3c7960"/>
+  </g>
+  <g text-anchor="middle" font-family="Segoe UI, Arial, sans-serif">
+    <g fill="#f0f6fc" font-size="17" font-weight="600">
+      <text x="99" y="49">Your history</text>
+      <text x="289" y="49">Taste profile</text>
+      <text x="479" y="49">Find &amp; score</text>
+      <text x="669" y="49">Critique &amp; verify</text>
+      <text x="860" y="49">Picks with reasons</text>
+    </g>
+    <g fill="#b4c1ce" font-size="12">
+      <text x="99" y="72">Ratings, likes, rewatches</text>
+      <text x="289" y="72">Patterns + dislikes</text>
+      <text x="479" y="72">Metadata + similarity</text>
+      <text x="669" y="72">AI + evidence checks</text>
+      <text x="860" y="72">New + watchlist</text>
+    </g>
+  </g>
+</svg>

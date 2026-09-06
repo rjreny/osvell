@@ -48,27 +48,7 @@ These screenshots use the real interface with sample data. See [screenshot notes
 
 Taste looks for connections across the films you've rated: the people who made them, the stories and genres they share, and how closely they resemble both your favorites and your disappointments. Your rating habits, likes, rewatches, and recent viewing help shape the picture.
 
-```mermaid
-flowchart TD
-    A["Your film history<br/>Ratings · likes · rewatches · recency"] --> B["Build a taste profile<br/>Recurring preferences + negative evidence"]
-    B --> C
-    C["Find candidates<br/>Related films · filmmakers · friends · watchlist"] --> D
-    B --> D["Compare and score<br/>Metadata connections + semantic similarity"]
-    D --> E["AI critique<br/>Question weak connections and identify gaps"]
-    E -. "Optional web discovery" .-> F["Resolve discoveries to real films<br/>Enrich and score them"]
-    E --> G["Validate and assemble<br/>Check eligibility, evidence, and list membership"]
-    F --> G
-    G --> H["Your Taste workspace<br/>New discoveries + watchlist picks"]
-    H --> I["Grounded explanations<br/>Connect the picks to your film history"]
-    H -. "Your feedback" .-> B
-
-    classDef input fill:#182c3a,stroke:#82b8d8,color:#f1f6fa
-    classDef process fill:#242832,stroke:#959eaf,color:#f1f6fa
-    classDef result fill:#16382c,stroke:#79c99d,color:#f1f6fa
-    class A,B,C input
-    class D,E,F,G process
-    class H,I result
-```
+![Taste in five steps: your history, taste profile, candidate scoring, critique and verification, then picks with reasons](docs/images/taste-pipeline.svg)
 
 **What makes this interesting:**
 
