@@ -1,6 +1,10 @@
 # Studio
 
-Real app after the bakeoff. Tauri 2 host. Features talk to `src/platform` only.
+Developer guide for Studio. Looking to use the app? Start with the [product README](../README.md) or [download the latest Windows release](https://github.com/rjreny/studio/releases/latest).
+
+The product lives in this directory. The `../prototypes/` shells are historical experiments. Studio uses Tauri 2; features talk to `src/platform` only and must not import `@tauri-apps/*` directly. The lint configuration enforces that boundary.
+
+Install Node.js/npm and the Windows Tauri build prerequisites (Rust, Microsoft C++ Build Tools, and WebView2), then run these commands from this directory:
 
 ```bash
 npm install
@@ -14,4 +18,6 @@ While developing, use `npm run dev:manual` so code changes queue behind an **Upd
 
 NSIS is per-user. After any change that should reach the installed app, bump the version, push `master`, and push a `v*` tag so release CI can cut a signed NSIS installer and `latest.json` for auto-update. Do not wait for a reminder — a push without a `v*` tag does not update the installed app.
 
-Repo: https://github.com/rjreny/studio
+Release CI needs the `TAURI_SIGNING_PRIVATE_KEY` repository secret. Keep the signing key out of source control. The updater feed must be publicly reachable; pushes to `master` warm the Rust build cache, while `v*` tags publish the installer and updater manifest. Documentation-only changes do not require a version bump or installer release.
+
+Repository: [rjreny/studio](https://github.com/rjreny/studio).
