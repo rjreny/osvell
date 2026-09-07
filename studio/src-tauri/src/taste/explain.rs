@@ -232,9 +232,7 @@ pub fn select_display_reasons(cited: &[&FeatureAffinity], extras: &[String]) -> 
         display_priority(b)
             .cmp(&display_priority(a))
             .then_with(|| {
-                b.scoring_affinity()
-                    .partial_cmp(&a.scoring_affinity())
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                crate::taste::ord::cmp_f32_desc(a.scoring_affinity(), b.scoring_affinity())
             })
             .then_with(|| a.key.family.sort_key().cmp(&b.key.family.sort_key()))
             .then_with(|| a.key.name.cmp(&b.key.name))

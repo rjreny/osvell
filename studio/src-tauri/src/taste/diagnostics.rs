@@ -135,11 +135,7 @@ fn detect_exceptions(films: &[FilmRecord]) -> Vec<TasteException> {
         });
     }
     exceptions.sort_by(|left, right| {
-        right
-            .residual
-            .abs()
-            .partial_cmp(&left.residual.abs())
-            .unwrap_or(std::cmp::Ordering::Equal)
+        crate::taste::ord::cmp_f32_desc(left.residual.abs(), right.residual.abs())
     });
     exceptions.truncate(8);
     exceptions

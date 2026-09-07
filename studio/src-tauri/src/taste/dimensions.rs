@@ -194,9 +194,7 @@ pub fn derive(films: &[ModeFilm<'_>]) -> (Vec<TasteDimensionView>, Vec<TasteMode
         }
     }
     modes.sort_by(|a, b| {
-        b.strength
-            .partial_cmp(&a.strength)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        crate::taste::ord::cmp_f32_desc(a.strength, b.strength)
             .then_with(|| a.dimension.cmp(&b.dimension))
     });
 

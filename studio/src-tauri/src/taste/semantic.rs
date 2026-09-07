@@ -323,10 +323,7 @@ fn semantic_score(candidate: &[f32], history: &HashMap<i64, RatedVector>) -> Sem
 }
 
 fn weighted_top_mean(mut values: Vec<(f32, f32)>) -> (f32, usize) {
-    values.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    values.sort_by(|a, b| crate::taste::ord::cmp_f32_desc(a.0, b.0));
     let selected = values.into_iter().take(TOP_HISTORY_MATCHES).collect::<Vec<_>>();
     let weight = selected.iter().map(|(_, w)| *w).sum::<f32>();
     if weight <= 0.0 {
@@ -1042,8 +1039,7 @@ fn positive_training<'a>(films: &'a [FilmRecord]) -> Vec<&'a FilmRecord> {
     out.sort_by(|a, b| {
         let ar = a.rating.unwrap_or(0.0);
         let br = b.rating.unwrap_or(0.0);
-        br.partial_cmp(&ar)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        crate::taste::ord::cmp_f32_desc(ar, br)
             .then_with(|| {
                 let aw = a
                     .signal
@@ -1055,8 +1051,7 @@ fn positive_training<'a>(films: &'a [FilmRecord]) -> Vec<&'a FilmRecord> {
                     .as_ref()
                     .map(|s| s.recommendation_weight)
                     .unwrap_or(0.0);
-                bw.partial_cmp(&aw)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                crate::taste::ord::cmp_f32_desc(aw, bw)
             })
             .then_with(|| a.tmdb_id.cmp(&b.tmdb_id))
     });
@@ -1233,9 +1228,7 @@ fn nearest_neighbors<'a>(
         .map(|row| (row, cosine(query, &row.vector).max(0.0)))
         .collect();
     scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.tmdb_id.cmp(&b.0.tmdb_id))
+        crate::taste::ord::cmp_f32_desc(a.1, b.1).then_with(|| a.0.tmdb_id.cmp(&b.0.tmdb_id))
     });
     let mut pruned = 0usize;
     let mut out = Vec::new();
@@ -1370,9 +1363,7 @@ pub fn retrieve_semantic_candidates(
             .iter()
             .filter_map(|s| s.similarity)
             .fold(0.0f32, f32::max);
-        bs.partial_cmp(&as_)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.tmdb_id.cmp(&b.tmdb_id))
+        crate::taste::ord::cmp_f32_desc(as_, bs).then_with(|| a.tmdb_id.cmp(&b.tmdb_id))
     });
     out
 }

@@ -855,6 +855,9 @@ pub fn score_craft_with_config(
             let role_w = family.weight() * person.attribution;
             let mut shrunk = net * shrink;
             let mut contribution = shrunk * role_w * aff.confidence.max(0.15);
+            if !contribution.is_finite() {
+                contribution = 0.0;
+            }
 
             if family == FeatureFamily::Actor {
                 match config.actor_mode {
@@ -1013,10 +1016,7 @@ pub fn score_craft_with_config(
     };
 
     contributions.sort_by(|a, b| {
-        b.contribution
-            .abs()
-            .partial_cmp(&a.contribution.abs())
-            .unwrap_or(std::cmp::Ordering::Equal)
+        crate::taste::ord::cmp_f32_desc(a.contribution.abs(), b.contribution.abs())
     });
     contributions.truncate(12);
 
@@ -1075,7 +1075,7 @@ fn lineage_effective_score(contributions: &[CraftContribution]) -> f32 {
         return 0.0;
     }
     // Soft diminishing across independent lineages.
-    cluster_scores.sort_by(|a, b| b.abs().partial_cmp(&a.abs()).unwrap_or(std::cmp::Ordering::Equal));
+    cluster_scores.sort_by(|a, b| crate::taste::ord::cmp_f32_desc(a.abs(), b.abs()));
     let mut acc = 0.0;
     let mut w = 0.0;
     for (idx, s) in cluster_scores.iter().enumerate() {
@@ -1116,6 +1116,12 @@ fn combine_fit(content: &ContentResult, craft: &CraftResult, include_craft: bool
 
 fn ranking_score(fit: f32, confidence: f32) -> f32 {
     // Conservative: prefer higher fit; slight penalty when confidence is low.
+    let fit = if fit.is_finite() { fit } else { 0.0 };
+    let confidence = if confidence.is_finite() {
+        confidence
+    } else {
+        0.5
+    };
     fit + CONFIDENCE_RANK_NUDGE * (confidence - 0.5)
 }
 
@@ -1317,14 +1323,11 @@ pub fn score_pool_family_fit_full(
         })
         .collect();
     out.sort_by(|a, b| {
-        b.1.ranking_score
-            .partial_cmp(&a.1.ranking_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                a.0.tmdb_id
-                    .unwrap_or(i64::MAX)
-                    .cmp(&b.0.tmdb_id.unwrap_or(i64::MAX))
-            })
+        crate::taste::ord::cmp_f32_desc(a.1.ranking_score, b.1.ranking_score).then_with(|| {
+            a.0.tmdb_id
+                .unwrap_or(i64::MAX)
+                .cmp(&b.0.tmdb_id.unwrap_or(i64::MAX))
+        })
     });
     out
 }
@@ -1365,14 +1368,11 @@ pub fn score_pool_family_fit(
         })
         .collect();
     out.sort_by(|a, b| {
-        b.1.ranking_score
-            .partial_cmp(&a.1.ranking_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                a.0.tmdb_id
-                    .unwrap_or(i64::MAX)
-                    .cmp(&b.0.tmdb_id.unwrap_or(i64::MAX))
-            })
+        crate::taste::ord::cmp_f32_desc(a.1.ranking_score, b.1.ranking_score).then_with(|| {
+            a.0.tmdb_id
+                .unwrap_or(i64::MAX)
+                .cmp(&b.0.tmdb_id.unwrap_or(i64::MAX))
+        })
     });
     // Counterfactual rank deltas
     let content_only_order: HashMap<String, usize> = {
@@ -1389,9 +1389,7 @@ pub fn score_pool_family_fit(
             })
             .collect::<Vec<_>>();
         tmp.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
+            crate::taste::ord::cmp_f32_desc(a.1, b.1).then_with(|| a.0.cmp(&b.0))
         });
         tmp.into_iter()
             .enumerate()
@@ -1414,9 +1412,7 @@ pub fn score_pool_family_fit(
             })
             .collect::<Vec<_>>();
         tmp.sort_by(|a, b| {
-            b.1.partial_cmp(&a.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.0.cmp(&b.0))
+            crate::taste::ord::cmp_f32_desc(a.1, b.1).then_with(|| a.0.cmp(&b.0))
         });
         tmp.into_iter()
             .enumerate()
@@ -1732,5 +1728,41 @@ mod tests {
     fn writer_screenplay_outranks_characters_job() {
         assert!(writer_job_weight("Screenplay") > writer_job_weight("Story"));
         assert!(writer_job_weight("Story") > writer_job_weight("Characters"));
+    }
+
+    #[test]
+    fn craft_contribution_sort_survives_nan() {
+        let mut contributions = vec![
+            CraftContribution {
+                name: "A".into(),
+                role: "Director".into(),
+                rated_support: 1,
+                n_eff: 1.0,
+                weighted_rating_affinity: 0.5,
+                positive_evidence_weight: 1.0,
+                negative_evidence_weight: 0.0,
+                shrunk_affinity: 0.5,
+                candidate_role_weight: 1.0,
+                contribution: 0.4,
+                support_film_ids: vec![],
+            },
+            CraftContribution {
+                name: "B".into(),
+                role: "Director".into(),
+                rated_support: 1,
+                n_eff: 1.0,
+                weighted_rating_affinity: 0.5,
+                positive_evidence_weight: 1.0,
+                negative_evidence_weight: 0.0,
+                shrunk_affinity: 0.5,
+                candidate_role_weight: 1.0,
+                contribution: f32::NAN,
+                support_film_ids: vec![],
+            },
+        ];
+        contributions.sort_by(|a, b| {
+            crate::taste::ord::cmp_f32_desc(a.contribution.abs(), b.contribution.abs())
+        });
+        assert_eq!(contributions.len(), 2);
     }
 }

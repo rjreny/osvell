@@ -431,9 +431,7 @@ pub fn enrich_eligible_seeds(
         missing(&films[a])
             .cmp(&missing(&films[b]))
             .then_with(|| {
-                seed_priority(&films[b])
-                    .partial_cmp(&seed_priority(&films[a]))
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                crate::taste::ord::cmp_f32_desc(seed_priority(&films[a]), seed_priority(&films[b]))
             })
             .then_with(|| films[a].tmdb_id.cmp(&films[b].tmdb_id))
             .then_with(|| films[a].title.cmp(&films[b].title))
@@ -512,9 +510,7 @@ pub fn enrich_rated_library(
                 .abs();
             abs * crate::taste::preference::recency_weight(f.age_years)
         };
-        score(&films[b])
-            .partial_cmp(&score(&films[a]))
-            .unwrap_or(std::cmp::Ordering::Equal)
+        crate::taste::ord::cmp_f32_desc(score(&films[a]), score(&films[b]))
             .then_with(|| films[a].tmdb_id.cmp(&films[b].tmdb_id))
             .then_with(|| films[a].title.cmp(&films[b].title))
     });
@@ -660,9 +656,7 @@ pub fn build_retrieval_pool(
     let mut by_key: HashMap<String, Candidate> = HashMap::new();
     let mut seeds: Vec<&FilmRecord> = films.iter().filter(|f| eligible_positive_like(f)).collect();
     seeds.sort_by(|a, b| {
-        seed_priority(b)
-            .partial_cmp(&seed_priority(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
+        crate::taste::ord::cmp_f32_desc(seed_priority(a), seed_priority(b))
             .then_with(|| {
                 a.tmdb_id
                     .unwrap_or(i64::MAX)

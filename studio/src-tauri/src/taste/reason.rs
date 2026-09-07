@@ -280,9 +280,7 @@ pub fn deterministic_title(profile: &FeatureProfile) -> String {
         .filter(|m| m.strength > 0.15)
         .collect();
     modes.sort_by(|a, b| {
-        b.strength
-            .partial_cmp(&a.strength)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        crate::taste::ord::cmp_f32_desc(a.strength, b.strength)
             .then_with(|| a.dimension.cmp(&b.dimension))
     });
     let labels: Vec<String> = modes
@@ -390,8 +388,7 @@ fn top_craft_people(profile: &FeatureProfile) -> Vec<&crate::taste::features::Fe
     people.sort_by(|a, b| {
         let qa = a.scoring_affinity() * a.portability.clamp(0.0, 1.0);
         let qb = b.scoring_affinity() * b.portability.clamp(0.0, 1.0);
-        qb.partial_cmp(&qa)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        crate::taste::ord::cmp_f32_desc(qa, qb)
             .then_with(|| a.key.family.sort_key().cmp(&b.key.family.sort_key()))
             .then_with(|| a.key.name.cmp(&b.key.name))
             .then_with(|| a.key.id.cmp(&b.key.id))
@@ -590,10 +587,7 @@ fn film_sample(film: &FilmRecord) -> Option<Value> {
 fn representative_history(films: &[FilmRecord]) -> Value {
     let mut rated: Vec<&FilmRecord> = films.iter().filter(|f| f.rating.is_some()).collect();
     rated.sort_by(|a, b| {
-        b.rating
-            .unwrap()
-            .partial_cmp(&a.rating.unwrap())
-            .unwrap_or(std::cmp::Ordering::Equal)
+        crate::taste::ord::cmp_f32_desc(a.rating.unwrap_or(0.0), b.rating.unwrap_or(0.0))
             .then_with(|| a.tmdb_id.cmp(&b.tmdb_id))
             .then_with(|| a.title.cmp(&b.title))
     });

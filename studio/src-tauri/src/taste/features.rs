@@ -831,9 +831,7 @@ pub fn build_profile(obs: &[FeatureObservation]) -> FeatureProfile {
         });
     }
     affinities.sort_by(|a, b| {
-        b.scoring_affinity()
-            .partial_cmp(&a.scoring_affinity())
-            .unwrap_or(std::cmp::Ordering::Equal)
+        crate::taste::ord::cmp_f32_desc(a.scoring_affinity(), b.scoring_affinity())
             .then_with(|| a.key.family.sort_key().cmp(&b.key.family.sort_key()))
             .then_with(|| a.key.name.cmp(&b.key.name))
             .then_with(|| a.key.id.cmp(&b.key.id))
@@ -894,10 +892,7 @@ pub fn build_profile(obs: &[FeatureObservation]) -> FeatureProfile {
         }
     }
     shifts.sort_by(|a, b| {
-        b.delta
-            .abs()
-            .partial_cmp(&a.delta.abs())
-            .unwrap_or(std::cmp::Ordering::Equal)
+        crate::taste::ord::cmp_f32_desc(a.delta.abs(), b.delta.abs())
             .then_with(|| a.family.sort_key().cmp(&b.family.sort_key()))
             .then_with(|| a.feature.cmp(&b.feature))
     });

@@ -26,6 +26,7 @@ pub mod hybrid_board_ab;
 pub mod hybrid_calibration;
 pub mod hybrid_exam;
 pub mod match_calibration;
+pub mod ord;
 pub mod preference;
 pub mod provenance;
 pub mod quality;

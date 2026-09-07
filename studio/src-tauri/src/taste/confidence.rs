@@ -154,9 +154,7 @@ fn best_craft_quality(c: &ScoredCandidate) -> (f32, u32) {
             (quality, f.appearances)
         })
         .max_by(|a, b| {
-            a.0.partial_cmp(&b.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.1.cmp(&b.1))
+            crate::taste::ord::cmp_f32(a.0, b.0).then(a.1.cmp(&b.1))
         })
         .unwrap_or((0.0, 0))
 }
