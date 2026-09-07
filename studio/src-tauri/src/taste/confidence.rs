@@ -471,24 +471,22 @@ pub fn sort_workspace(rows: &mut [ScoredCandidate]) {
 }
 
 /// Internal ranking for `taste-v1-quality-first-final`:
-/// known G > missing G → strict G when `|ΔG| > ε` → Content Fit only inside ε →
-/// confidence / candidate_fit / seeds / stable tmdb id.
+/// known G > missing G → higher G (strict `total_cmp`) → Content Fit / confidence /
+/// candidate_fit / seeds / stable tmdb id.
+///
+/// Do **not** branch on `|ΔG| ≤ ε` here. Pairwise epsilon ties are not a total order
+/// (A≈B, B≈C, A≉C) and panic Rust's sort. Soft reordering inside ε groups happens
+/// afterward in `diversify_within_quality_ties`.
 pub fn rank_order(a: &ScoredCandidate, b: &ScoredCandidate) -> std::cmp::Ordering {
-    use crate::taste::quality::{quality_near_tie, quality_rank_key, QUALITY_TIE_EPSILON};
-    let _ = QUALITY_TIE_EPSILON; // documented in quality_near_tie
+    use crate::taste::quality::quality_rank_key;
 
     let (ka, ga) = quality_rank_key(a.has_quality_prior, a.quality_prior);
     let (kb, gb) = quality_rank_key(b.has_quality_prior, b.quality_prior);
     kb.cmp(&ka).then_with(|| {
-        // Both missing → Content Fit; both known with |ΔG|>ε → G; near-tie → Content.
         if ka == 0 && kb == 0 {
             return content_then_confidence(a, b);
         }
-        if quality_near_tie(a.has_quality_prior, a.quality_prior, b.has_quality_prior, b.quality_prior)
-        {
-            return content_then_confidence(a, b);
-        }
-        // total_cmp: NaN must not collapse to Equal or sort panics on total order.
+        // Strict G first; content only when G compares Equal (incl. NaN bit-ties).
         gb.total_cmp(&ga).then_with(|| content_then_confidence(a, b))
     })
 }
@@ -685,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn content_fit_only_breaks_near_g_ties() {
+    fn strict_g_outranks_content_even_within_epsilon() {
         let lower_g_higher_fit =
             with_g(with_total(row_with(vec![], false, false, 0.9, 1), 0.9), Some(0.10));
         let higher_g_lower_fit =
@@ -695,9 +693,10 @@ mod tests {
             std::cmp::Ordering::Less
         );
 
+        // |ΔG|=0.02 ≤ ε — comparator still uses G; diversify may soft-reorder later.
         let a = with_g(with_total(row_with(vec![], false, false, 0.9, 3), 0.9), Some(0.10));
         let b = with_g(with_total(row_with(vec![], false, false, 0.4, 4), 0.4), Some(0.12));
-        assert_eq!(rank_order(&a, &b), std::cmp::Ordering::Less);
+        assert_eq!(rank_order(&b, &a), std::cmp::Ordering::Less);
     }
 
     #[test]
@@ -710,6 +709,21 @@ mod tests {
         ];
         rows.sort_by(rank_order);
         assert_eq!(rows.len(), 4);
+    }
+
+    #[test]
+    fn rank_order_survives_epsilon_chain_that_broke_near_tie() {
+        // A≈B and B≈C within ε, but |A−C| > ε. Pairwise near-tie branching
+        // produced a cycle and panicked sort; strict G must stay transitive.
+        let a = with_g(with_total(row_with(vec![], false, false, 0.9, 1), 0.9), Some(0.00));
+        let b = with_g(with_total(row_with(vec![], false, false, 0.5, 2), 0.5), Some(0.03));
+        let c = with_g(with_total(row_with(vec![], false, false, 0.1, 3), 0.1), Some(0.06));
+        let mut rows = vec![a, b, c];
+        rows.sort_by(rank_order);
+        assert_eq!(
+            rows.iter().map(|r| r.candidate.tmdb_id).collect::<Vec<_>>(),
+            vec![Some(3), Some(2), Some(1)]
+        );
     }
 
     #[test]
