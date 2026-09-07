@@ -51,22 +51,44 @@ where
     let thread = std::thread::Builder::new()
         .name(format!("studio-{name}"))
         .spawn(move || {
-            let result = work(&app, db_path);
-            if let Err(err) = result {
-                crate::app_log::write(&app, &format!("{name} failed: {err}"));
-                if name == "taste" {
-                    persist_taste_failure(&app, &err);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                work(&app, db_path)
+            }));
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    crate::app_log::write(&app, &format!("{name} failed: {err}"));
+                    if name == "taste" {
+                        persist_taste_failure(&app, &err);
+                    }
+                    let _ = app.emit(
+                        "studio-job",
+                        JobProgress {
+                            job: name.into(),
+                            label: format!("{name} failed · {}", toast_err(&err)),
+                            errors: 1,
+                            done: true,
+                            ..Default::default()
+                        },
+                    );
                 }
-                let _ = app.emit(
-                    "studio-job",
-                    JobProgress {
-                        job: name.into(),
-                        label: format!("{name} failed · {}", toast_err(&err)),
-                        errors: 1,
-                        done: true,
-                        ..Default::default()
-                    },
-                );
+                Err(panic) => {
+                    let msg = panic_message(&panic);
+                    crate::app_log::write(&app, &format!("{name} panicked: {msg}"));
+                    if name == "taste" {
+                        persist_taste_failure(&app, &format!("panicked: {msg}"));
+                    }
+                    let _ = app.emit(
+                        "studio-job",
+                        JobProgress {
+                            job: name.into(),
+                            label: format!("{name} failed · {msg}"),
+                            errors: 1,
+                            done: true,
+                            ..Default::default()
+                        },
+                    );
+                }
             }
             end_job(&worker_slot);
         })
@@ -76,6 +98,16 @@ where
         return Err(err);
     }
     Ok(())
+}
+
+fn panic_message(panic: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unexpected panic".into()
+    }
 }
 
 pub fn open_worker_db(path: &PathBuf) -> Result<Database, String> {

@@ -975,15 +975,45 @@ pub fn analyze_with_run_log(
         ..Default::default()
     });
     let quality_catalog = crate::taste::quality::load_quality_catalog(db).ok();
+    progress(JobProgress {
+        job: "taste".into(),
+        label: format!("Ranking {} candidates…", candidates.len()),
+        current: 2,
+        total: 6,
+        detail: Some(format!(
+            "{} taste signals · scoring content fit",
+            profile.affinities.len()
+        )),
+        ..Default::default()
+    });
     let mut pool = crate::taste::score::score_pool_with_semantic(
         &profile,
         &candidates,
         &semantic_scores,
         quality_catalog.as_ref(),
     );
+    progress(JobProgress {
+        job: "taste".into(),
+        label: format!("Ranking {} candidates…", candidates.len()),
+        current: 2,
+        total: 6,
+        detail: Some(format!(
+            "{} cleared eligibility · clustering",
+            pool.ranked.len()
+        )),
+        ..Default::default()
+    });
     crate::taste::semantic::attach_semantic_clusters_from_db(db, &mut pool.ranked);
     crate::taste::semantic::attach_semantic_clusters_from_db(db, &mut pool.dropped_contextual);
     crate::taste::feedback::filter_mood_suppressed_candidates(db, &mut pool.ranked)?;
+    progress(JobProgress {
+        job: "taste".into(),
+        label: format!("Ranking {} candidates…", candidates.len()),
+        current: 2,
+        total: 6,
+        detail: Some(format!("{} on the shortlist path", pool.ranked.len())),
+        ..Default::default()
+    });
     let replay = if cfg!(debug_assertions) && std::env::var_os("STUDIO_TASTE_REPLAY").is_some() {
         Some(match eval::run_replay(db, &key, &films, 20) {
             Ok(report) => report,

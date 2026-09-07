@@ -139,6 +139,24 @@ pub fn score_candidate_with_semantic(
     candidate: &Candidate,
     semantic: &SemanticScore,
 ) -> ScoredCandidate {
+    let index = affinity_index(profile);
+    score_candidate_with_index(profile, &index, candidate, semantic)
+}
+
+fn affinity_index(profile: &FeatureProfile) -> std::collections::HashMap<String, usize> {
+    let mut index = std::collections::HashMap::with_capacity(profile.affinities.len());
+    for (i, aff) in profile.affinities.iter().enumerate() {
+        index.entry(aff.key.storage_key()).or_insert(i);
+    }
+    index
+}
+
+fn score_candidate_with_index(
+    profile: &FeatureProfile,
+    affinity_by_key: &std::collections::HashMap<String, usize>,
+    candidate: &Candidate,
+    semantic: &SemanticScore,
+) -> ScoredCandidate {
     let mut content_sum = 0.0;
     let mut content_w = 0.0;
     let mut recent_sum = 0.0;
@@ -150,10 +168,17 @@ pub fn score_candidate_with_semantic(
     let mut negative_features = Vec::new();
 
     let keys = candidate_keys(candidate);
-    let _matched_primary = profile.affinities.iter().any(|aff| {
-        aff.citeable()
-            && aff.key.family.is_primary()
-            && keys.iter().any(|k| k.storage_key() == aff.key.storage_key())
+    // Resolve matches through the affinity index (O(keys)), then walk them in
+    // profile order so family top-k / citation behavior stays stable.
+    let mut matched_idxs: Vec<usize> = keys
+        .iter()
+        .filter_map(|k| affinity_by_key.get(&k.storage_key()).copied())
+        .collect();
+    matched_idxs.sort_unstable();
+    matched_idxs.dedup();
+    let _matched_primary = matched_idxs.iter().any(|&idx| {
+        let aff = &profile.affinities[idx];
+        aff.citeable() && aff.key.family.is_primary()
     });
     let mut family_used: std::collections::HashMap<FeatureFamily, usize> =
         std::collections::HashMap::new();
@@ -161,11 +186,9 @@ pub fn score_candidate_with_semantic(
     let mut matched_features: Vec<MatchedFeatureView> = Vec::new();
     let mut hidden_features: Vec<MatchedFeatureView> = Vec::new();
 
-    for aff in &profile.affinities {
+    for idx in matched_idxs {
+        let aff = &profile.affinities[idx];
         if aff.key.family.is_contextual() {
-            continue;
-        }
-        if !keys.iter().any(|k| k.storage_key() == aff.key.storage_key()) {
             continue;
         }
         if !aff.citeable() {
@@ -1563,6 +1586,7 @@ pub fn score_pool_with_semantic(
     semantic_scores: &std::collections::HashMap<i64, SemanticScore>,
     quality_catalog: Option<&crate::taste::quality::QualityCatalog>,
 ) -> ScorePool {
+    let affinity_by_key = affinity_index(profile);
     let mut dropped_filmography = Vec::new();
     let mut dropped_contextual = Vec::new();
     let mut dropped_filmography_total = 0;
@@ -1579,7 +1603,7 @@ pub fn score_pool_with_semantic(
             .and_then(|id| semantic_scores.get(&id))
             .cloned()
             .unwrap_or_default();
-        let mut row = score_candidate_with_semantic(profile, c, &semantic);
+        let mut row = score_candidate_with_index(profile, &affinity_by_key, c, &semantic);
         stamp_quality_prior(&mut row, c, quality_catalog);
         // Watchlist competes in the same C1 band population as everything else.
         if crate::taste::confidence::unreleased_new_row(&row)
@@ -1771,6 +1795,75 @@ mod tests {
         assert!((0.0..=1.0).contains(&s.watchlist));
         assert!((-1.0..=1.0).contains(&s.novelty));
         assert!((-1.0..=0.0).contains(&s.negative_evidence));
+    }
+
+    #[test]
+    fn ranking_large_affinity_profile_stays_responsive() {
+        use crate::taste::features::{FeatureAffinity, FeatureFamily, FeatureKey, FeatureProfile};
+        use crate::taste::retrieve::{Candidate, MediaKind};
+        use std::time::Instant;
+
+        let mut affinities = Vec::with_capacity(8_000);
+        for i in 0..8_000 {
+            affinities.push(FeatureAffinity {
+                key: FeatureKey::new(FeatureFamily::Keyword, Some(i), format!("kw-{i}")),
+                appearances: 2,
+                weighted_mean: 0.5,
+                preference_mean: 0.4,
+                recommendation_mean: 0.5,
+                weighted_variance: 0.01,
+                positive_weight: 1.0,
+                negative_weight: 0.0,
+                recent_weight: 0.1,
+                long_term_weight: 0.9,
+                confidence: 0.6,
+                feature_strength: 0.5,
+                portability: 0.5,
+                feedback_adjustment: 0.0,
+                evidence_cluster: Default::default(),
+                positive_evidence: Vec::new(),
+                negative_evidence: Vec::new(),
+            });
+        }
+        // One overlapping signal so scoring does real work.
+        affinities[0].key = FeatureKey::new(FeatureFamily::Genre, None, "Drama");
+        let profile = FeatureProfile {
+            affinities,
+            ..Default::default()
+        };
+        let candidates: Vec<Candidate> = (0..250)
+            .map(|i| Candidate {
+                tmdb_id: Some(10_000 + i),
+                title: format!("Film {i}"),
+                year: Some(2000),
+                poster: None,
+                genres: vec!["Drama".into()],
+                credits: Vec::new(),
+                keywords: (0..20)
+                    .map(|k| crate::taste::features::Keyword {
+                        id: Some(k),
+                        name: format!("kw-{k}"),
+                    })
+                    .collect(),
+                runtime: Some(110),
+                vote_count: Some(1000),
+                watchlist: false,
+                friend_affinity: 0.0,
+                tmdb_related: 0.0,
+                media_kind: MediaKind::Movie,
+                sources: Vec::new(),
+            })
+            .collect();
+
+        let started = Instant::now();
+        let pool = score_pool_with_semantic(&profile, &candidates, &Default::default(), None);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed.as_secs() < 5,
+            "ranking took {:?}; affinity×key matching is likely regressing",
+            elapsed
+        );
+        assert!(!pool.ranked.is_empty() || pool.dropped_contextual_total > 0);
     }
 
     #[test]
