@@ -75,6 +75,9 @@ pub struct JobProgress {
     pub posters: u32,
     pub errors: u32,
     pub done: bool,
+    /// Optional secondary status line (candidate counts, model name, etc.).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enrich: Option<EnrichReport>,
     #[serde(skip_serializing_if = "Option::is_none")]

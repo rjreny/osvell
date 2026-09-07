@@ -48,7 +48,7 @@ function sectionPicks(report: NonNullable<TasteState["report"]>) {
 }
 
 function waitHint() {
-  return "Usually under a minute. If OpenRouter blocks a model, Taste retries without web search, then with Gemini 3.7 Flash.";
+  return "Usually under a minute. If a model stalls, Taste retries without web search, then with Gemini 3.7 Flash.";
 }
 
 function likedIds(feedback: TasteFeedback[] | undefined) {
@@ -283,108 +283,215 @@ export function RecsView({
 
   const snapshot = state?.snapshot;
   const report = state?.report;
+  const reportStale = Boolean(state?.reportStale);
   const key = state?.key;
   const keyReady = Boolean(key?.stored && key.valid !== false);
   const enoughRatings = (snapshot?.ratedCount ?? 0) >= 8;
   const step = job?.current ?? 1;
+  const showBoard = Boolean(report) && !running;
+  const showStage = !showBoard;
 
   return (
-    <div className="recs page-pad">
-      <header className="page-head">
-        <div>
-          <h1>{report?.title ?? "Taste"}</h1>
-          <p className="muted">
-            {snapshot
-              ? `${report?.ratedCount ?? snapshot.ratedCount} ratings · ${snapshot.lovedCount} loved · ${snapshot.hatedCount} disliked`
-              : "Find new films from your imported history."}
-          </p>
-        </div>
-        {keyReady && enoughRatings ? (
-          <div className="taste-actions">
-            <button type="button" className="primary" disabled={running} onClick={() => void run()}>
-              {running ? "Reading…" : report ? "Read again" : "Read my log"}
-            </button>
-            {report ? (
-              <button
-                type="button"
-                className="taste-refresh"
-                aria-label="Refresh recommendation metadata"
-                title="Refresh recommendation metadata"
-                disabled={running}
-                onClick={() => void run(true)}
-              >
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M20 11a8 8 0 1 0 2 5.2" />
-                  <path d="M20 4v7h-7" />
-                </svg>
-              </button>
+    <div className={`recs page-pad${showStage ? " recs-is-stage" : ""}`}>
+      {showBoard ? (
+        <>
+          <header className="page-head">
+            <div>
+              <h1>{report?.title ?? "Taste"}</h1>
+              <p className="muted">
+                {snapshot
+                  ? `${report?.ratedCount ?? snapshot.ratedCount} ratings · ${snapshot.lovedCount} loved · ${snapshot.hatedCount} disliked`
+                  : "Find new films from your imported history."}
+              </p>
+            </div>
+            {keyReady && enoughRatings ? (
+              <div className="taste-actions">
+                <button type="button" className="primary" disabled={running} onClick={() => void run()}>
+                  Read again
+                </button>
+                <button
+                  type="button"
+                  className="taste-refresh"
+                  aria-label="Refresh recommendation metadata"
+                  title="Refresh recommendation metadata"
+                  disabled={running}
+                  onClick={() => void run(true)}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M20 11a8 8 0 1 0 2 5.2" />
+                    <path d="M20 4v7h-7" />
+                  </svg>
+                </button>
+              </div>
             ) : null}
-          </div>
-        ) : null}
-      </header>
+          </header>
+
+          {error ? <p className="taste-error">{error}</p> : null}
+
+          {reportStale ? (
+            <div className="taste-stale" role="status">
+              <div>
+                <strong>Saved from an earlier Taste version</strong>
+                <p className="muted">
+                  Your last board is still here. Read again to rebuild with the current ranking.
+                </p>
+              </div>
+              {keyReady && enoughRatings ? (
+                <button type="button" className="primary" onClick={() => void run()}>
+                  Read again
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
+          {report ? (
+            <TasteLists
+              report={report}
+              hidden={hidden}
+              interested={interested}
+              onSelectFilm={onSelectFilm}
+              onFeedback={(pick, action, options) => void sendFeedback(pick, action, options)}
+            />
+          ) : null}
+
+          {report ? <TasteProfileFooter report={report} observation={state?.observation} /> : null}
+        </>
+      ) : (
+        <TasteStage
+          running={running}
+          job={job}
+          elapsed={elapsed}
+          step={step}
+          error={error}
+          keyReady={keyReady}
+          enoughRatings={enoughRatings}
+          snapshot={snapshot ?? null}
+          onRun={() => void run()}
+          onOpenSettings={onOpenSettings}
+        />
+      )}
+    </div>
+  );
+}
+
+function TasteStage({
+  running,
+  job,
+  elapsed,
+  step,
+  error,
+  keyReady,
+  enoughRatings,
+  snapshot,
+  onRun,
+  onOpenSettings,
+}: {
+  running: boolean;
+  job: JobProgress | null;
+  elapsed: number;
+  step: number;
+  error: string | null;
+  keyReady: boolean;
+  enoughRatings: boolean;
+  snapshot: TasteState["snapshot"] | null;
+  onRun: () => void;
+  onOpenSettings: () => void;
+}) {
+  const progress = job && job.total > 0 ? Math.min(1, job.current / job.total) : running ? 0.08 : 0;
+  const genres = (snapshot?.genres ?? []).slice(0, 4).map((g) => g.label);
+  const directors = (snapshot?.directors ?? []).slice(0, 2).map((d) => d.label);
+
+  return (
+    <section className="taste-stage" aria-live="polite">
+      <p className="taste-stage-eyebrow">{running ? "Working" : "Taste"}</p>
+      <h1>{running ? (job?.label ?? "Reading your log…") : "Find your next film"}</h1>
+
+      {running && job?.detail ? <p className="taste-stage-detail">{job.detail}</p> : null}
+
+      {!running && snapshot ? (
+        <p className="muted taste-stage-lede">
+          {snapshot.ratedCount} ratings · {snapshot.lovedCount} loved · {snapshot.hatedCount} disliked
+        </p>
+      ) : null}
+
+      {!running && (genres.length || directors.length) ? (
+        <ul className="taste-stage-chips" aria-label="Signals from your log">
+          {genres.map((label) => (
+            <li key={`g-${label}`}>{label}</li>
+          ))}
+          {directors.map((label) => (
+            <li key={`d-${label}`}>{label}</li>
+          ))}
+        </ul>
+      ) : null}
 
       {error ? <p className="taste-error">{error}</p> : null}
 
-      {!keyReady && state ? (
-        <section className="taste-setup">
-          <h2>Pay as you go</h2>
-          <p>
-            Taste uses OpenRouter. DeepSeek V4 Pro 0813 is the recommended default from models
-            your key can actually reach. Add a few dollars of credit, paste the key in Settings,
-            then come back.
-          </p>
-          <button type="button" className="primary" onClick={onOpenSettings}>
-            Open Settings
-          </button>
-        </section>
-      ) : null}
-
-      {keyReady && !enoughRatings && snapshot ? (
-        <p className="muted pad">Rate at least 8 films so the agent has likes and dislikes to compare.</p>
-      ) : null}
-
       {running ? (
-        <section className="taste-run" aria-live="polite">
-          <div className="taste-run-head">
-            <strong>{job?.label ?? "Reading your log…"}</strong>
-            <span className="muted taste-elapsed">{formatElapsed(elapsed)}</span>
+        <>
+          <div className="taste-stage-meta">
+            <span className="taste-elapsed">{formatElapsed(elapsed)}</span>
+            <span className="muted">
+              {job?.current ?? 1}/{job?.total ?? 6}
+            </span>
           </div>
-          <ol>
+          <div
+            className="taste-progress-track"
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={job?.total ?? 6}
+            aria-valuenow={job?.current ?? 1}
+            aria-label="Taste progress"
+          >
+            <div className="taste-progress-fill" style={{ width: `${Math.round(progress * 100)}%` }} />
+          </div>
+          <ol className="taste-stage-steps">
             {RUN_STEPS.map((label, index) => {
               const n = index + 1;
               const cls = n < step ? "is-done" : n === step ? "is-now" : "";
               return (
                 <li key={label} className={cls}>
-                  <span>{n}</span>
-                  {label}
+                  <span>{n < step ? "✓" : n}</span>
+                  <div>
+                    <strong>{label}</strong>
+                    {n === step && job?.detail ? <small>{job.detail}</small> : null}
+                  </div>
                 </li>
               );
             })}
           </ol>
-          <p className="muted">{waitHint()}</p>
-        </section>
+          <p className="muted taste-stage-hint">{waitHint()}</p>
+        </>
       ) : null}
 
-      {report ? (
-        <TasteLists
-          report={report}
-          hidden={hidden}
-          interested={interested}
-          onSelectFilm={onSelectFilm}
-          onFeedback={(pick, action, options) => void sendFeedback(pick, action, options)}
-        />
+      {!running && !keyReady ? (
+        <div className="taste-stage-setup">
+          <p>
+            Taste uses OpenRouter. DeepSeek V4 Pro 0813 is the recommended default. Add a few dollars of
+            credit, paste the key in Settings, then come back.
+          </p>
+          <button type="button" className="primary" onClick={onOpenSettings}>
+            Open Settings
+          </button>
+        </div>
       ) : null}
 
-      {keyReady && enoughRatings && !report && !running ? (
-        <p className="muted pad">
-          The scorer reads every rating, then ranks up to 50 films quality-first.
-          Match % is Content Fit (how well a title fits your taste), not the ranking key.
-          Watchlist titles stay in that same order with a badge.
-        </p>
+      {!running && keyReady && !enoughRatings && snapshot ? (
+        <p className="muted">Rate at least 8 films so the agent has likes and dislikes to compare.</p>
       ) : null}
 
-      {report ? <TasteProfileFooter report={report} observation={state?.observation} /> : null}
-    </div>
+      {!running && keyReady && enoughRatings ? (
+        <div className="taste-stage-cta">
+          <p className="muted">
+            Ranks up to 50 films quality-first from your log. Match % is Content Fit — how well a title
+            fits your taste.
+          </p>
+          <button type="button" className="primary" onClick={onRun}>
+            Read my log
+          </button>
+        </div>
+      ) : null}
+    </section>
   );
 }
 

@@ -59,6 +59,7 @@ export type JobProgress = {
   posters: number;
   errors: number;
   done: boolean;
+  detail?: string | null;
   enrich?: EnrichReport | null;
   import?: ImportResult | null;
   taste?: TasteReport | null;
@@ -486,6 +487,7 @@ export type TasteState = {
   key: TasteKeyStatus;
   snapshot: TasteSnapshot;
   report: TasteReport | null;
+  reportStale?: boolean;
   feedback?: TasteFeedback[];
   observation?: TasteObservationSummary;
 };

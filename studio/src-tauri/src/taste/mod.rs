@@ -264,6 +264,9 @@ pub struct TasteState {
     pub key: TasteKeyStatus,
     pub snapshot: TasteSnapshot,
     pub report: Option<TasteReport>,
+    /// True when a saved board exists but was built under a different algorithm version.
+    #[serde(default)]
+    pub report_stale: bool,
     #[serde(default)]
     pub feedback: Vec<crate::taste::feedback::TasteFeedback>,
     #[serde(default)]
@@ -783,22 +786,37 @@ pub fn load_state(db: &Database) -> Result<TasteState, String> {
     crate::taste::feedback::apply_feedback_adjustments(&mut profile, &feedback_adjustments);
     let feedback = crate::taste::feedback::list_feedback(db).unwrap_or_default();
     let hide = crate::taste::feedback::hide_ids(&feedback);
-    let report = load_current_report(db)?
+    let (report, report_stale) = load_saved_report(db)?;
+    let report = report
         .map(|r| filter_report_with_mood(r.normalize(), &hide, db))
         .transpose()?;
     Ok(TasteState {
         key: stored_status(db)?,
         snapshot: snapshot_of(&films, Some(&profile)),
         report,
+        report_stale,
         feedback,
         observation: crate::taste::feedback::observation_summary(db).unwrap_or_default(),
     })
 }
 
+/// Load the last Taste board even when the algorithm version has moved on.
+/// Stale boards still display so reopen does not wipe recommendations.
+fn load_saved_report(db: &Database) -> Result<(Option<TasteReport>, bool), String> {
+    let Some(raw) = db.get_meta(META_REPORT)? else {
+        return Ok((None, false));
+    };
+    let Ok(report) = serde_json::from_str::<TasteReport>(&raw) else {
+        return Ok((None, false));
+    };
+    let stale = report.algorithm_version != workspace::ALGORITHM_VERSION;
+    Ok((Some(report), stale))
+}
+
+#[cfg(test)]
 fn load_current_report(db: &Database) -> Result<Option<TasteReport>, String> {
-    Ok(db.get_meta(META_REPORT)?
-        .and_then(|raw| serde_json::from_str::<TasteReport>(&raw).ok())
-        .filter(|report| report.algorithm_version == workspace::ALGORITHM_VERSION))
+    let (report, stale) = load_saved_report(db)?;
+    Ok(report.filter(|_| !stale))
 }
 
 fn filter_report(mut report: TasteReport, hide: &std::collections::HashSet<i64>) -> TasteReport {
@@ -868,6 +886,7 @@ pub fn analyze_with_run_log(
         label: format!("Reading your log · {rated} ratings"),
         current: 1,
         total: 6,
+        detail: Some("Building taste signals from ratings, likes, and watchlist".into()),
         ..Default::default()
     });
     if rated < MIN_RATINGS {
@@ -883,6 +902,10 @@ pub fn analyze_with_run_log(
                     label: "Using cached recommendations…".into(),
                     current: 6,
                     total: 6,
+                    detail: Some(format!(
+                        "{} scored titles ready · skipping model calls",
+                        snap.scored_pool.len()
+                    )),
                     ..Default::default()
                 });
                 return finish_from_snapshot(db, &snap, &model, web, rated as u32, None);
@@ -901,9 +924,12 @@ pub fn analyze_with_run_log(
     let seen = seen_keys(&films);
     progress(JobProgress {
         job: "taste".into(),
-        label: "Scoring candidates…".into(),
+        label: "Gathering candidates…".into(),
         current: 2,
         total: 6,
+        detail: Some(format!(
+            "Refreshing {seeds_refreshed} seeds · related films, filmographies, watchlist"
+        )),
         ..Default::default()
     });
     let retrieved = retrieve_with_coverage(db, &films, &profile, &seen, force_refresh)?;
@@ -913,16 +939,41 @@ pub fn analyze_with_run_log(
     // The watchlist is an explicit user request and currently contains the
     // sparse metadata most likely to be dropped by the evidence gate. Give
     // the one-time backfill enough room to cover it before related results.
+    progress(JobProgress {
+        job: "taste".into(),
+        label: format!("Enriching {} candidates…", candidates.len()),
+        current: 2,
+        total: 6,
+        detail: Some(format!(
+            "{} seeds with related · {} already in catalog",
+            coverage.seeds_with_usable_related, coverage.candidates_with_catalog
+        )),
+        ..Default::default()
+    });
     retrieve::enrich_missing(db, &mut candidates, 320, force_refresh);
     progress(JobProgress {
         job: "taste".into(),
-        label: "Comparing candidates with your liked and disliked films…".into(),
+        label: format!("Scoring {} candidates…", candidates.len()),
         current: 2,
         total: 6,
+        detail: Some("Comparing against liked and disliked films".into()),
         ..Default::default()
     });
     let (semantic_scores, semantic_stats) =
         semantic::score_candidates(db, &key, &films, &candidates);
+    progress(JobProgress {
+        job: "taste".into(),
+        label: format!("Ranking {} candidates…", candidates.len()),
+        current: 2,
+        total: 6,
+        detail: Some(format!(
+            "Embeddings {}/{} · {} cache hits",
+            semantic_stats.candidate_coverage,
+            semantic_stats.candidate_items.max(1),
+            semantic_stats.cache_hits
+        )),
+        ..Default::default()
+    });
     let quality_catalog = crate::taste::quality::load_quality_catalog(db).ok();
     let mut pool = crate::taste::score::score_pool_with_semantic(
         &profile,
@@ -997,12 +1048,16 @@ pub fn analyze_with_run_log(
     progress(JobProgress {
         job: "taste".into(),
         label: format!(
-            "Asking {} to critique the shortlist… ({} KB)",
-            model_label(&model),
-            (call1_body.to_string().len() / 1024).max(1)
+            "Asking {} to critique the shortlist…",
+            model_label(&model)
         ),
         current: 3,
         total: 6,
+        detail: Some(format!(
+            "{} shortlist titles · {} KB prompt",
+            short.len(),
+            (call1_body.to_string().len() / 1024).max(1)
+        )),
         ..Default::default()
     });
     let critic = match run_json(&key, &model, CALL1_SYSTEM, &call1_body, false)
@@ -1036,11 +1091,27 @@ pub fn analyze_with_run_log(
         },
         current: 4,
         total: 6,
+        detail: Some(if web {
+            format!(
+                "Up to {} research queries from the critic",
+                critic.discovery_queries.len().min(3)
+            )
+        } else {
+            "Web search is off in Settings".into()
+        }),
         ..Default::default()
     });
     let mut discoveries = Vec::new();
     if web {
         for q in critic.discovery_queries.iter().take(3) {
+            progress(JobProgress {
+                job: "taste".into(),
+                label: "Running targeted discovery…".into(),
+                current: 4,
+                total: 6,
+                detail: Some(format!("Researching “{}”", q.query)),
+                ..Default::default()
+            });
             match run_json(
                 &key,
                 &used_model,
@@ -1080,12 +1151,16 @@ pub fn analyze_with_run_log(
     progress(JobProgress {
         job: "taste".into(),
         label: format!(
-            "Asking {} for your taste profile… ({} KB)",
-            model_label(&used_model),
-            (call2_body.to_string().len() / 1024).max(1)
+            "Asking {} for your taste profile…",
+            model_label(&used_model)
         ),
         current: 5,
         total: 6,
+        detail: Some(format!(
+            "{} discoveries folded in · {} KB prompt",
+            discoveries.len(),
+            (call2_body.to_string().len() / 1024).max(1)
+        )),
         ..Default::default()
     });
     let mut reasoner = run_reasoner(&key, &used_model, &call2_body)
@@ -1105,6 +1180,10 @@ pub fn analyze_with_run_log(
         label: "Matching posters…".into(),
         current: 6,
         total: 6,
+        detail: Some(format!(
+            "Assembling board from {} ranked titles",
+            validated.workspace.pre_feedback_pool.len()
+        )),
         ..Default::default()
     });
     let report_run_id = Uuid::new_v4().to_string();
@@ -2106,13 +2185,23 @@ mod tests {
         assert_eq!(report.picks.len(), 1);
         let db = Database::in_memory().unwrap();
         db.set_meta(META_REPORT, raw).unwrap();
+        // Empty algorithm version is treated as stale but still returned for display.
+        let (saved, stale) = load_saved_report(&db).unwrap();
+        assert!(stale);
+        assert_eq!(saved.unwrap().normalize().new_picks[0].title, "Heat");
         assert!(load_current_report(&db).unwrap().is_none());
         let mut current = report;
         current.algorithm_version = "taste-workspace-23-effective-viewings".into();
         db.set_meta(META_REPORT, &serde_json::to_string(&current).unwrap()).unwrap();
+        let (saved, stale) = load_saved_report(&db).unwrap();
+        assert!(stale);
+        assert_eq!(saved.unwrap().new_picks[0].title, "Heat");
         assert!(load_current_report(&db).unwrap().is_none());
         current.algorithm_version = workspace::ALGORITHM_VERSION.into();
         db.set_meta(META_REPORT, &serde_json::to_string(&current).unwrap()).unwrap();
+        let (saved, stale) = load_saved_report(&db).unwrap();
+        assert!(!stale);
+        assert_eq!(saved.unwrap().new_picks[0].title, "Heat");
         assert_eq!(load_current_report(&db).unwrap().unwrap().new_picks[0].title, "Heat");
     }
 

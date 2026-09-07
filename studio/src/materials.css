@@ -2855,6 +2855,233 @@ html[data-theme="light"] .ghost {
   max-width: 56ch;
 }
 
+.recs-is-stage {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100dvh - var(--nav-height) - 32px);
+}
+
+.taste-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  width: min(100%, 440px);
+  margin: 0 auto;
+  padding: var(--space-6) 0 var(--space-5);
+  gap: 10px;
+  animation: taste-stage-in 420ms ease both;
+}
+
+@keyframes taste-stage-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.taste-stage-eyebrow {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.taste-stage h1 {
+  margin: 0;
+  font-size: clamp(26px, 3.4vw, 34px);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  text-wrap: balance;
+}
+
+.taste-stage-detail,
+.taste-stage-lede {
+  margin: 0;
+  max-width: 40ch;
+  line-height: 1.45;
+}
+
+.taste-stage-detail {
+  color: var(--text-muted);
+  font-size: 14px;
+  min-height: 1.4em;
+  animation: taste-detail-in 280ms ease both;
+}
+
+@keyframes taste-detail-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.taste-stage-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  list-style: none;
+  margin: 6px 0 4px;
+  padding: 0;
+}
+
+.taste-stage-chips li {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.taste-stage-meta {
+  display: flex;
+  justify-content: space-between;
+  width: min(100%, 360px);
+  margin-top: 8px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.taste-progress-track {
+  width: min(100%, 360px);
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--text-muted) 18%, transparent);
+  overflow: hidden;
+}
+
+.taste-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 420ms ease;
+}
+
+.taste-stage-steps {
+  list-style: none;
+  width: min(100%, 360px);
+  margin: 10px 0 0;
+  padding: 0;
+  text-align: left;
+}
+
+.taste-stage-steps li {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 7px 0;
+  color: var(--text-muted);
+  border-top: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+}
+
+.taste-stage-steps li:first-child {
+  border-top: 0;
+}
+
+.taste-stage-steps li.is-now {
+  color: inherit;
+}
+
+.taste-stage-steps li.is-now strong {
+  font-weight: 650;
+}
+
+.taste-stage-steps li span {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  margin-top: 1px;
+}
+
+.taste-stage-steps li.is-now span {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: oklch(0.18 0.04 145);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 18%, transparent);
+}
+
+.taste-stage-steps li.is-done span {
+  background: var(--surface);
+  color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent) 40%, var(--border));
+}
+
+.taste-stage-steps li div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.taste-stage-steps li strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.taste-stage-steps li small {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.taste-stage-hint,
+.taste-stage-cta p,
+.taste-stage-setup p {
+  margin: 8px 0 0;
+  max-width: 42ch;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.taste-stage-cta,
+.taste-stage-setup {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.taste-stale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin: 0 0 var(--space-5);
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.taste-stale strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+.taste-stale p {
+  margin: 0;
+  max-width: 56ch;
+  font-size: 13px;
+}
+
 .taste-run {
   margin: 0 0 var(--space-5);
   max-width: 62ch;
@@ -3639,6 +3866,16 @@ html[data-theme="light"] .ghost {
 
   .taste-observation {
     padding-left: 0;
+  }
+
+  .taste-stale {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .taste-stage {
+    width: min(100%, 400px);
+    padding-top: var(--space-5);
   }
 }
 

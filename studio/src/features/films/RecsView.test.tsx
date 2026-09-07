@@ -57,7 +57,7 @@ function pick(title: string, tmdbId: number): TastePick {
   };
 }
 
-function state(): TasteState {
+function state(overrides: Partial<TasteState> = {}): TasteState {
   return {
     key: { stored: true, valid: true, lastError: null, model: "model", web: false, models: [] },
     snapshot: { ratedCount: 10, lovedCount: 5, hatedCount: 1, avgRating: 4, genres: [], decades: [], directors: [] },
@@ -75,6 +75,7 @@ function state(): TasteState {
       generatedAt: "2026-08-28T00:00:00Z",
       ratedCount: 10,
     },
+    ...overrides,
   };
 }
 
@@ -91,7 +92,8 @@ describe("RecsView feedback", () => {
   it("sends the selected Pass reason and target feature to Taste", async () => {
     render(<RecsView onSelectFilm={vi.fn()} onOpenSettings={vi.fn()} />);
 
-    const card = (await screen.findByText("New recommendation")).closest("article");
+    const title = await screen.findByRole("button", { name: "New recommendation" });
+    const card = title.closest("article");
     expect(card).not.toBeNull();
     fireEvent.click(within(card!).getByRole("radio", { name: "Pass" }));
     fireEvent.click(await screen.findByRole("button", { name: "That connection doesn't fit" }));
@@ -108,8 +110,8 @@ describe("RecsView feedback", () => {
   it("labels positive feedback as interest instead of a duplicate save", async () => {
     render(<RecsView onSelectFilm={vi.fn()} onOpenSettings={vi.fn()} />);
 
-    const newCard = (await screen.findByText("New recommendation")).closest("article");
-    const watchlistCard = screen.getByText("Watchlist recommendation").closest("article");
+    const newCard = (await screen.findByRole("button", { name: "New recommendation" })).closest("article");
+    const watchlistCard = screen.getByRole("button", { name: "Watchlist recommendation" }).closest("article");
     expect(within(newCard!).getByRole("radio", { name: "Interested" })).toBeInTheDocument();
     expect(within(watchlistCard!).getByRole("radio", { name: "Interested" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
@@ -118,7 +120,7 @@ describe("RecsView feedback", () => {
   it("opens match evidence in a portal popover and closes it with Escape", async () => {
     render(<RecsView onSelectFilm={vi.fn()} onOpenSettings={vi.fn()} />);
 
-    const card = (await screen.findByText("New recommendation")).closest("article");
+    const card = (await screen.findByRole("button", { name: "New recommendation" })).closest("article");
     const trigger = within(card!).getByRole("button", { name: "Why New recommendation is a 74% match" });
     fireEvent.click(trigger);
 
@@ -128,5 +130,36 @@ describe("RecsView feedback", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Why this 74% match" })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it("keeps a stale board visible with a refresh prompt", async () => {
+    tasteGet.mockResolvedValue(state({ reportStale: true }));
+    render(<RecsView onSelectFilm={vi.fn()} onOpenSettings={vi.fn()} />);
+
+    expect(await screen.findByText("Saved from an earlier Taste version")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New recommendation" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Read again" }).length).toBeGreaterThan(0);
+  });
+
+  it("centers the empty Taste stage before a run", async () => {
+    tasteGet.mockResolvedValue(
+      state({
+        report: null,
+        snapshot: {
+          ratedCount: 12,
+          lovedCount: 4,
+          hatedCount: 2,
+          avgRating: 3.5,
+          genres: [{ label: "Thriller", count: 5, avg: 4 }],
+          decades: [],
+          directors: [{ label: "Mann", count: 2, avg: 5 }],
+        },
+      }),
+    );
+    render(<RecsView onSelectFilm={vi.fn()} onOpenSettings={vi.fn()} />);
+
+    expect(await screen.findByRole("heading", { name: "Find your next film" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Read my log" })).toBeInTheDocument();
+    expect(screen.getByText("Thriller")).toBeInTheDocument();
   });
 });
