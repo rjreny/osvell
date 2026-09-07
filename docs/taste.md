@@ -1,4 +1,4 @@
-# How Studio builds a recommendation
+# How Osvell builds a recommendation
 
 Taste is a hybrid recommendation pipeline: structured preference scoring and semantic comparison, with AI critique and narration around a validated shortlist. This overview describes the released v0.13.0 architecture; the development direction below is explicitly separate.
 
@@ -11,7 +11,7 @@ Taste is a hybrid recommendation pipeline: structured preference scoring and sem
 5. **Validate and explain.** Code checks eligibility and assembles the recommendation workspace. A separate narration step describes taste and supporting connections; its output does not control final list membership or order. Grounding and fallback logic constrain unsupported prose.
 6. **Use feedback.** Feedback records interest, rejection, and already-seen status, with reasons that distinguish a poor match from a temporary mood. Relevant feedback adjusts future analysis.
 
-An embedding is a numerical representation of a film's descriptive metadata. Comparing embeddings can find similarities beyond an exact shared genre or credit. It does not mean Studio has watched or directly understood the film's video or audio.
+An embedding is a numerical representation of a film's descriptive metadata. Comparing embeddings can find similarities beyond an exact shared genre or credit. It does not mean Osvell has watched or directly understood the film's video or audio.
 
 ## What is being developed
 
@@ -31,14 +31,14 @@ These links are pinned to v0.13.0 so the explanation remains auditable while the
 
 | Responsibility | Source |
 | --- | --- |
-| History signals | [preference.rs](https://github.com/rjreny/studio/blob/v0.13.0/studio/src-tauri/src/taste/preference.rs) |
-| Retrieval | [retrieve.rs](https://github.com/rjreny/studio/blob/v0.13.0/studio/src-tauri/src/taste/retrieve.rs) |
-| Scoring | [score.rs](https://github.com/rjreny/studio/blob/v0.13.0/studio/src-tauri/src/taste/score.rs) |
-| Semantic comparison | [semantic.rs](https://github.com/rjreny/studio/blob/v0.13.0/studio/src-tauri/src/taste/semantic.rs) |
-| Critique and narration | [reason.rs](https://github.com/rjreny/studio/blob/v0.13.0/studio/src-tauri/src/taste/reason.rs) |
-| Validation and assembly | [validate.rs](https://github.com/rjreny/studio/blob/v0.13.0/studio/src-tauri/src/taste/validate.rs), [workspace.rs](https://github.com/rjreny/studio/blob/v0.13.0/studio/src-tauri/src/taste/workspace.rs) |
-| Feedback and evaluation | [feedback.rs](https://github.com/rjreny/studio/blob/v0.13.0/studio/src-tauri/src/taste/feedback.rs), [eval.rs](https://github.com/rjreny/studio/blob/v0.13.0/studio/src-tauri/src/taste/eval.rs) |
+| History signals | [preference.rs](https://github.com/rjreny/osvell/blob/v0.13.0/studio/src-tauri/src/taste/preference.rs) |
+| Retrieval | [retrieve.rs](https://github.com/rjreny/osvell/blob/v0.13.0/studio/src-tauri/src/taste/retrieve.rs) |
+| Scoring | [score.rs](https://github.com/rjreny/osvell/blob/v0.13.0/studio/src-tauri/src/taste/score.rs) |
+| Semantic comparison | [semantic.rs](https://github.com/rjreny/osvell/blob/v0.13.0/studio/src-tauri/src/taste/semantic.rs) |
+| Critique and narration | [reason.rs](https://github.com/rjreny/osvell/blob/v0.13.0/studio/src-tauri/src/taste/reason.rs) |
+| Validation and assembly | [validate.rs](https://github.com/rjreny/osvell/blob/v0.13.0/studio/src-tauri/src/taste/validate.rs), [workspace.rs](https://github.com/rjreny/osvell/blob/v0.13.0/studio/src-tauri/src/taste/workspace.rs) |
+| Feedback and evaluation | [feedback.rs](https://github.com/rjreny/osvell/blob/v0.13.0/studio/src-tauri/src/taste/feedback.rs), [eval.rs](https://github.com/rjreny/osvell/blob/v0.13.0/studio/src-tauri/src/taste/eval.rs) |
 
 ## Data and online services
 
-Studio persists its library and cached analysis locally. TMDB provides catalog matching and metadata, and Letterboxd public RSS provides recent diary activity. Taste sends film-history evidence and descriptive metadata through OpenRouter for model and embedding requests. Optional web discovery also makes online research requests. Provider availability, privacy practices, and usage charges apply.
+Osvell persists its library and cached analysis locally. TMDB provides catalog matching and metadata, and Letterboxd public RSS provides recent diary activity. Taste sends film-history evidence and descriptive metadata through OpenRouter for model and embedding requests. Optional web discovery also makes online research requests. Provider availability, privacy practices, and usage charges apply.

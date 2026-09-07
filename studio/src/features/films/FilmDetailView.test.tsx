@@ -103,7 +103,7 @@ describe("FilmDetailView", () => {
 
     expect(await screen.findByRole("heading", { name: "Last rating" })).toBeInTheDocument();
     expect(screen.getByText("Letterboxd RSS")).toBeInTheDocument();
-    expect(screen.queryByText("Studio")).not.toBeInTheDocument();
+    expect(screen.queryByText("Osvell")).not.toBeInTheDocument();
   });
 
   it("plays trailers inside the detail view without leaving the app", async () => {

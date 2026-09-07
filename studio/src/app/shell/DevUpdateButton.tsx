@@ -37,7 +37,7 @@ export function DevUpdateButton() {
     await new Promise((r) => window.setTimeout(r, 350));
     setProgress({
       phase: "relaunching",
-      label: snapshot.rust ? "Restarting Studio…" : "Reloading…",
+      label: snapshot.rust ? "Restarting Osvell…" : "Reloading…",
       percent: 85,
       version: null,
       error: null,

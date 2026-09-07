@@ -5,7 +5,7 @@ use crate::taste::score::{evidence_grade, ScoredCandidate};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-pub const CALL1_SYSTEM: &str = r#"You are a film-taste critic inside Studio.
+pub const CALL1_SYSTEM: &str = r#"You are a film-taste critic inside Osvell.
 The deterministic system already scored a shortlist from the user's complete rating history.
 Your assessments WILL adjust the ranking of assessed shortlist candidates within bounded limits.
 You do NOT select recommendations, invent titles, or return a full ordered list. You critique the shortlist and optionally request targeted research.
@@ -34,7 +34,7 @@ Rules:
 - Raw JSON object only.
 "#;
 
-pub const CALL2_SYSTEM: &str = r#"You are the film-taste narrator inside Studio.
+pub const CALL2_SYSTEM: &str = r#"You are the film-taste narrator inside Osvell.
 The deterministic system already chose the recommendation lists. You do NOT select, rank, add, or remove films.
 
 Return JSON only:

@@ -1,12 +1,12 @@
 [package]
-name = "studio"
+name = "osvell"
 version = "0.15.0"
-description = "Studio"
+description = "Osvell — your personal film library"
 authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "studio_lib"
+name = "osvell_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

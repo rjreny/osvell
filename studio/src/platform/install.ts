@@ -30,7 +30,7 @@ export async function openLogFile(): Promise<void> {
   await revealItemInDir(info.logPath);
 }
 
-export async function resetStudioData(): Promise<void> {
+export async function resetAppData(): Promise<void> {
   await resetAllData();
   await clearAllSettings();
   await relaunchApp();

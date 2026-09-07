@@ -10,7 +10,7 @@ People who already track films on Letterboxd or similar services and want one ca
 
 ## Product Purpose
 
-Studio turns an existing film history into a private, polished library with useful visual context and grounded discovery. Success is a user being able to quickly recognize their taste and confidently choose something new to watch.
+Osvell turns an existing film history into a private, polished library with useful visual context and grounded discovery. Success is a user being able to quickly recognize their taste and confidently choose something new to watch.
 
 ## Brand Personality
 

@@ -16,7 +16,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { error: E
     if (this.state.error) {
       return (
         <div className="crash">
-          <h1>Studio hit an error</h1>
+          <h1>Osvell hit an error</h1>
           <p>{this.state.error.message}</p>
           <button type="button" className="primary" onClick={() => this.setState({ error: null })}>
             Try again

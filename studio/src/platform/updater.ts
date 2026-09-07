@@ -117,7 +117,7 @@ export async function downloadAndInstallUpdate(
       label: "Updates run in the installed app",
       percent: null,
       version: null,
-      error: "Not running in Studio",
+      error: "Not running in Osvell",
     });
     return;
   }
@@ -128,7 +128,7 @@ export async function downloadAndInstallUpdate(
       label: "Install updates from the release build",
       percent: null,
       version: null,
-      error: "Dev builds cannot install NSIS updates. Install Studio from the GitHub release, then use Update there.",
+      error: "Dev builds cannot install NSIS updates. Install Osvell from the GitHub release, then use Update there.",
     });
     return;
   }
@@ -203,7 +203,7 @@ export async function downloadAndInstallUpdate(
         case "Finished":
           onProgress({
             phase: "installing",
-            label: "Finishing update — Studio will reopen automatically…",
+            label: "Finishing update — Osvell will reopen automatically…",
             percent: 100,
             version: update.version,
             error: null,
@@ -214,7 +214,7 @@ export async function downloadAndInstallUpdate(
 
     onProgress({
       phase: "relaunching",
-      label: "Restarting Studio…",
+      label: "Restarting Osvell…",
       percent: 100,
       version: update.version,
       error: null,

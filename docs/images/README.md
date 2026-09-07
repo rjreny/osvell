@@ -1,6 +1,6 @@
 # README screenshots
 
-Captured on 2026-09-06 from Studio's v0.13.0 frontend components and styles, rendered in a browser with a sample library. These are interface screenshots, not generated UI mockups or captures of the installed Windows executable.
+Captured on 2026-09-06 from Osvell's v0.13.0 frontend components and styles, rendered in a browser with a sample library. These are interface screenshots, not generated UI mockups or captures of the installed Windows executable.
 
 - `studio-home.jpg`: Home, cinematic backdrop and recent-film shelf.
 - `studio-films.jpg`: Films, poster grid and filters.

@@ -53,7 +53,7 @@ pub fn set_api_key(key: &str) -> Result<(), String> {
         Some(stored) if stored == key => Ok(()),
         Some(_) => Err("Windows Credential Manager stored a different TMDB key than the one just saved".into()),
         None => Err(
-            "Windows Credential Manager did not keep the TMDB key. Studio cannot match ZIP films without it."
+            "Windows Credential Manager did not keep the TMDB key. Osvell cannot match ZIP films without it."
                 .into(),
         ),
     }
@@ -181,7 +181,7 @@ fn tmdb_get(key: &str, path_and_query: &str) -> Result<String, String> {
         format!("{TMDB_BASE}{path_and_query}{sep}api_key={key}")
     };
     let mut req = ureq::get(&url)
-        .set("User-Agent", "Studio/0.1 (local film app)")
+        .set("User-Agent", "Osvell/0.1 (local film app)")
         .timeout(std::time::Duration::from_secs(8));
     if is_bearer_token(key) {
         req = req.set("Authorization", &format!("Bearer {key}"));

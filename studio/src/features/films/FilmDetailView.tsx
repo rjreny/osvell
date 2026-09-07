@@ -38,7 +38,7 @@ function sourceLabel(source: string) {
   const raw = source.replace(/^\d+\./, "").replace(/_/g, " ").trim();
   if (/letterboxd export/i.test(raw)) return "Letterboxd export";
   if (/letterboxd rss/i.test(raw)) return "Letterboxd RSS";
-  if (/local/i.test(raw)) return "Studio";
+  if (/local/i.test(raw)) return "Osvell";
   return raw.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 

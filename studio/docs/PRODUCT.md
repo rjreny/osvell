@@ -1,4 +1,4 @@
-# Studio Film Library — Product Contract
+# Osvell Film Library — Product Contract
 
 ## Core invariant
 

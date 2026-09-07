@@ -44,7 +44,7 @@ export function ConnectView({
       const path = await pickExportZipPath();
       if (!path) return;
       await importExportZip(path);
-      onStatus("Importing ZIP in the background — you can keep using Studio");
+      onStatus("Importing ZIP in the background — you can keep using Osvell");
     } catch (err) {
       log("error", "export import failed", err);
       setError("Could not read that export. Use an official Letterboxd ZIP.");
@@ -58,7 +58,7 @@ export function ConnectView({
       <p className="hero-cast">Your log</p>
       <h1>Bring your Letterboxd life in.</h1>
       <p className="lede">
-        Studio keeps every diary event: rewatches, rating changes, and overlapping exports. Not just a
+        Osvell keeps every diary event: rewatches, rating changes, and overlapping exports. Not just a
         collapsed film count.
       </p>
       <label>
@@ -81,7 +81,7 @@ export function ConnectView({
       </div>
       {error ? <p className="form-error">{error}</p> : null}
       <p className="hint">
-        Full history: Letterboxd Settings, Import & Export, download ZIP. After you connect, Studio
+        Full history: Letterboxd Settings, Import & Export, download ZIP. After you connect, Osvell
         keeps your public diary RSS up to date on its own — same feed Letterboxd publishes for RSS
         readers, about once an hour. Re-import a fresh export ZIP to include ratings and reviews
         that were added without a diary log.

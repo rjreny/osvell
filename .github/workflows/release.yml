@@ -39,6 +39,6 @@ jobs:
         with:
           projectPath: studio
           tagName: ${{ github.ref_name }}
-          releaseName: "Studio ${{ github.ref_name }}"
+          releaseName: "Osvell ${{ github.ref_name }}"
           releaseBody: "Windows NSIS installer."
           args: --bundles nsis
