@@ -1,6 +1,6 @@
 [package]
 name = "osvell"
-version = "0.15.1"
+version = "0.15.2"
 description = "Osvell — your personal film library"
 authors = ["you"]
 edition = "2021"
