@@ -928,6 +928,8 @@ mod tests {
             matched_features: vec![],
             hidden_features: vec![],
             eligibility: Default::default(),
+            quality_prior: 0.0,
+            has_quality_prior: false,
         }
     }
 

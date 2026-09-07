@@ -33,14 +33,18 @@ function pickKey(pick: TastePick) {
 }
 
 function sectionPicks(report: NonNullable<TasteState["report"]>) {
-  const hasSections = Array.isArray(report.newPicks) || Array.isArray(report.watchlistPicks);
-  if (hasSections) {
-    return {
-      neu: [...(report.newPicks ?? []), ...(report.explorePicks ?? [])],
-      watch: report.watchlistPicks ?? [],
-    };
+  // Unified board: prefer `picks`, fall back to merging legacy shelf arrays once.
+  if (Array.isArray(report.picks) && report.picks.length) {
+    return report.picks;
   }
-  return { neu: report.picks ?? [], watch: [] as TastePick[] };
+  if (Array.isArray(report.newPicks) || Array.isArray(report.watchlistPicks)) {
+    return [
+      ...(report.newPicks ?? []),
+      ...(report.explorePicks ?? []),
+      ...(report.watchlistPicks ?? []),
+    ];
+  }
+  return [] as TastePick[];
 }
 
 function waitHint() {
@@ -55,6 +59,7 @@ function likedIds(feedback: TasteFeedback[] | undefined) {
 
 type TasteSort = "recommended" | "match" | "title" | "year";
 type TasteFilter = "all" | "50" | "60" | "70";
+type WatchlistFilter = "all" | "not_watchlist" | "watchlist";
 type TasteFeedbackOptions = {
   reason?: "already_seen_disliked" | "not_this_kind" | "wrong_connection" | "not_in_the_mood";
   targetFeatureKey?: string;
@@ -69,8 +74,6 @@ type OpenTastePopover = {
   openedWithKeyboard: boolean;
 };
 
-const FEATURED_MAX = 12;
-
 const TASTE_SORTS: { id: TasteSort; label: string }[] = [
   { id: "recommended", label: "Recommended" },
   { id: "match", label: "Highest match" },
@@ -83,6 +86,12 @@ const TASTE_FILTERS: { id: TasteFilter; label: string }[] = [
   { id: "70", label: "70%+" },
   { id: "60", label: "60%+" },
   { id: "50", label: "50%+" },
+];
+
+const WATCHLIST_FILTERS: { id: WatchlistFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "not_watchlist", label: "Not on watchlist" },
+  { id: "watchlist", label: "On watchlist" },
 ];
 
 function matchValue(pick: TastePick) {
@@ -103,10 +112,21 @@ function matchTone(pick: TastePick) {
   return score >= 0 ? "is-low" : "is-unknown";
 }
 
-function sortTastePicks(picks: TastePick[], sort: TasteSort, filter: TasteFilter) {
-  const filtered = picks.filter((pick) => filter === "all" || matchValue(pick) >= Number(filter));
+/** Filter hides rows without recomputing underlying recommendation order. */
+function filterTastePicks(
+  picks: TastePick[],
+  sort: TasteSort,
+  matchFilter: TasteFilter,
+  watchlistFilter: WatchlistFilter,
+) {
+  const filtered = picks.filter((pick) => {
+    if (matchFilter !== "all" && matchValue(pick) < Number(matchFilter)) return false;
+    if (watchlistFilter === "watchlist" && !pick.watchlist) return false;
+    if (watchlistFilter === "not_watchlist" && pick.watchlist) return false;
+    return true;
+  });
   if (sort === "recommended") return filtered;
-  return filtered.sort((a, b) => {
+  return [...filtered].sort((a, b) => {
     if (sort === "title") return a.title.localeCompare(b.title);
     if (sort === "year") {
       return (b.year ?? -Infinity) - (a.year ?? -Infinity);
@@ -357,8 +377,9 @@ export function RecsView({
 
       {keyReady && enoughRatings && !report && !running ? (
         <p className="muted pad">
-          The scorer reads every rating, then finds new films and ranks your watchlist separately.
-          Rewatches stay in the profile. The model writes a taste profile after the lists are chosen.
+          The scorer reads every rating, then ranks up to 50 films quality-first.
+          Match % is Content Fit (how well a title fits your taste), not the ranking key.
+          Watchlist titles stay in that same order with a badge.
         </p>
       ) : null}
 
@@ -380,104 +401,57 @@ function TasteLists({
   onSelectFilm: (id: string) => void;
   onFeedback: (pick: TastePick, action: "interested" | "rejected" | "seen", options?: TasteFeedbackOptions) => void;
 }) {
-  const { neu, watch } = sectionPicks(report);
-  const visibleNew = neu.filter((p) => !hidden.has(pickKey(p)));
-  const visibleWatch = watch.filter((p) => !hidden.has(pickKey(p)));
+  const all = sectionPicks(report);
+  const visible = all.filter((p) => !hidden.has(pickKey(p)));
   const [sort, setSort] = useState<TasteSort>("recommended");
   const [filter, setFilter] = useState<TasteFilter>("all");
+  const [watchlistFilter, setWatchlistFilter] = useState<WatchlistFilter>("all");
   const [openPopover, setOpenPopover] = useState<OpenTastePopover | null>(null);
-  const sortedNew = sortTastePicks(visibleNew, sort, filter);
-  const sortedWatch = sortTastePicks(visibleWatch, sort, filter);
-  const showFeaturedSplit = sort === "recommended" && filter === "all" && sortedNew.length > FEATURED_MAX;
-  const featuredNew = showFeaturedSplit ? sortedNew.slice(0, FEATURED_MAX) : sortedNew;
-  const moreNew = showFeaturedSplit ? sortedNew.slice(FEATURED_MAX) : [];
-  const controls = neu.length || watch.length ? (
-    <div className="flat-menu-toolbar taste-list-toolbar" role="group" aria-label="Recommendation list controls">
-      <Menu label="Sort" value={sort} options={TASTE_SORTS} onChange={(id) => setSort(id)} />
-      <Menu label="Match" value={filter} options={TASTE_FILTERS} onChange={(id) => setFilter(id)} />
-    </div>
-  ) : null;
-
-  function renderPickList(picks: TastePick[]) {
-    return (
-      <ul className="rec-list taste-rec-list">
-        {picks.map((pick) => (
-          <TastePickCard
-            key={pickKey(pick)}
-            pick={pick}
-            interested={Boolean(pick.tmdbId && interested.has(pick.tmdbId))}
-            onSelectFilm={onSelectFilm}
-            onFeedback={onFeedback}
-            openPopover={openPopover?.key === pickKey(pick) ? openPopover : null}
-            onOpenPopover={(kind, trigger, openedWithKeyboard) =>
-              setOpenPopover({ key: pickKey(pick), kind, trigger, openedWithKeyboard })
-            }
-            onClosePopover={() => setOpenPopover(null)}
-          />
-        ))}
-      </ul>
-    );
-  }
+  const sorted = filterTastePicks(visible, sort, filter, watchlistFilter);
 
   return (
-    <>
-      {neu.length ? (
-        <section>
-          <div className="shelf-head taste-shelf-head">
-            <div className="taste-list-heading">
-              <h2>New for you</h2>
-              <span className="muted">{listCount(sortedNew.length, visibleNew.length)} picks</span>
-            </div>
-            {controls}
+    <section>
+      <div className="shelf-head taste-shelf-head">
+        <div className="taste-list-heading">
+          <h2>Recommendations</h2>
+          <span className="muted">{listCount(sorted.length, visible.length)} picks</span>
+        </div>
+        {all.length ? (
+          <div className="flat-menu-toolbar taste-list-toolbar" role="group" aria-label="Recommendation list controls">
+            <Menu label="Sort" value={sort} options={TASTE_SORTS} onChange={(id) => setSort(id)} />
+            <Menu
+              label="Watchlist"
+              value={watchlistFilter}
+              options={WATCHLIST_FILTERS}
+              onChange={(id) => setWatchlistFilter(id)}
+            />
+            <Menu label="Match" value={filter} options={TASTE_FILTERS} onChange={(id) => setFilter(id)} />
           </div>
-          {sortedNew.length ? (
-            showFeaturedSplit ? (
-              <>
-                <p className="muted pad taste-band-label">Featured</p>
-                {renderPickList(featuredNew)}
-                <p className="muted pad taste-band-label">More for you</p>
-                {renderPickList(moreNew)}
-              </>
-            ) : (
-              renderPickList(sortedNew)
-            )
-          ) : (
-            <p className="muted pad">
-              {visibleNew.length ? "No new films match this filter." : "All new films are hidden."}
-            </p>
-          )}
-        </section>
+        ) : null}
+      </div>
+      {sorted.length ? (
+        <ul className="rec-list taste-rec-list">
+          {sorted.map((pick) => (
+            <TastePickCard
+              key={pickKey(pick)}
+              pick={pick}
+              interested={Boolean(pick.tmdbId && interested.has(pick.tmdbId))}
+              onSelectFilm={onSelectFilm}
+              onFeedback={onFeedback}
+              openPopover={openPopover?.key === pickKey(pick) ? openPopover : null}
+              onOpenPopover={(kind, trigger, openedWithKeyboard) =>
+                setOpenPopover({ key: pickKey(pick), kind, trigger, openedWithKeyboard })
+              }
+              onClosePopover={() => setOpenPopover(null)}
+            />
+          ))}
+        </ul>
       ) : (
-        <section>
-          <div className="shelf-head taste-shelf-head">
-            <div className="taste-list-heading">
-              <h2>New for you</h2>
-              <span className="muted">0 picks</span>
-            </div>
-            {controls}
-          </div>
-          <p className="muted pad">
-            Nothing new cleared this run.
-            {watch.length
-              ? " Watchlist below is what you already saved."
-              : ""}
-          </p>
-        </section>
+        <p className="muted pad">
+          {visible.length ? "No films match this filter." : "Nothing cleared this run."}
+        </p>
       )}
-      {watch.length ? (
-        <section className="taste-watchlist-section">
-          <div className="shelf-head">
-            <h2>Already on your watchlist</h2>
-            <span className="muted">{listCount(sortedWatch.length, visibleWatch.length)} picks</span>
-          </div>
-          {sortedWatch.length ? (
-            renderPickList(sortedWatch)
-          ) : (
-            <p className="muted pad">No watchlist films match this filter.</p>
-          )}
-        </section>
-      ) : null}
-    </>
+    </section>
   );
 }
 
@@ -598,6 +572,7 @@ function TastePickCard({
             )}
             <span className="taste-pick-meta muted">
               <span className={`taste-match ${matchTone(pick)}`}>{matchPercent(pick)}</span>
+              {pick.watchlist ? <span className="taste-watchlist-badge">Watchlist</span> : null}
               {pick.attribution ? (
                 <button
                   type="button"

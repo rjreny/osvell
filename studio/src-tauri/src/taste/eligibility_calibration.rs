@@ -250,7 +250,7 @@ fn evaluate_fold(
     )?;
     let candidates = select_fair_pool(pool.by_key, 1000);
     let semantic = score_candidates_from_cache(db, &inputs.training_films, &candidates);
-    let scored_pool = score_pool_with_semantic(&inputs.profile, &candidates, &semantic).ranked;
+    let scored_pool = score_pool_with_semantic(&inputs.profile, &candidates, &semantic, None).ranked;
 
     // Depth: how many New-eligible rows the live retrieval pool produces.
     let mut recommended_count = 0usize;

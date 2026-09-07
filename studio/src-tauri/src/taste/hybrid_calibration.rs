@@ -155,7 +155,7 @@ fn evaluate_policy(
     let oracle = r1000;
 
     let semantic = score_candidates_from_cache(db, &inputs.training_films, &hybrid.examined);
-    let mut scored = score_pool_with_semantic(&inputs.profile, &hybrid.examined, &semantic).ranked;
+    let mut scored = score_pool_with_semantic(&inputs.profile, &hybrid.examined, &semantic, None).ranked;
     // Attach clusters for board novelty diagnostic.
     let mut vectors = HashMap::new();
     for row in &scored {

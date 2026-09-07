@@ -589,6 +589,8 @@ mod tests {
             matched_features: vec![],
             hidden_features: vec![],
             eligibility: EligibilityTrace::default(),
+            quality_prior: 0.0,
+            has_quality_prior: false,
         };
         let only = semantic_novelty_for_candidates(&[row(&[RetrievalKind::SemanticProfile])]);
         assert_eq!(only.semantic_only, 1);

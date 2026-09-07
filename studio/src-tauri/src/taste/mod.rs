@@ -175,6 +175,9 @@ pub struct TastePick {
     pub semantic_coverage: bool,
     #[serde(default)]
     pub attribution: Option<crate::taste::feedback::TasteAttribution>,
+    /// Library state only — does not affect fit, eligibility, or rank.
+    #[serde(default)]
+    pub watchlist: bool,
 }
 
 fn default_semantic_fit() -> f32 {
@@ -920,10 +923,12 @@ pub fn analyze_with_run_log(
     });
     let (semantic_scores, semantic_stats) =
         semantic::score_candidates(db, &key, &films, &candidates);
+    let quality_catalog = crate::taste::quality::load_quality_catalog(db).ok();
     let mut pool = crate::taste::score::score_pool_with_semantic(
         &profile,
         &candidates,
         &semantic_scores,
+        quality_catalog.as_ref(),
     );
     crate::taste::semantic::attach_semantic_clusters_from_db(db, &mut pool.ranked);
     crate::taste::semantic::attach_semantic_clusters_from_db(db, &mut pool.dropped_contextual);
@@ -1507,6 +1512,7 @@ fn to_taste_picks(
             semantic_fit: scored.score.semantic_fit,
             semantic_coverage: scored.score.semantic_coverage,
             attribution,
+            watchlist: scored.candidate.watchlist,
         });
     }
     Ok((out, traces))

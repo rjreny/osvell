@@ -2,7 +2,11 @@
 //!
 //! `vote_count` only controls shrinkage confidence in `vote_average`.
 //! It must never become an independent popularity boost.
-//! Live Fit_v1 keeps Quality contribution at 0 until a variant earns inclusion.
+//!
+//! Production (`taste-v1-quality-first-final`):
+//! - Ordering uses `quality_prior` when `has_quality_prior` is true.
+//! - Missing quality ranks below known quality (0.0 is a valid neutral prior).
+//! - B4 Fit contribution (`fit_contribution` / QualityConfig λ into Fit) stays OFF.
 
 use crate::storage::db::Database;
 use crate::taste::retrieve::Candidate;
@@ -16,6 +20,9 @@ const FALLBACK_POP_MEAN: f32 = 6.5;
 /// Scale: ~2 TMDB points from mean → |prior| ≈ 1 before clamp.
 const CENTER_SCALE: f32 = 2.0;
 const QUALITY_BOUND: f32 = 0.05;
+
+/// Sole Content-Fit ranking bridge: `|ΔG| ≤ this` may use Content Fit / diversity.
+pub const QUALITY_TIE_EPSILON: f32 = 0.04;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -217,6 +224,20 @@ pub fn score_quality(
     }
 }
 
+/// Production ranking key: known G always outranks missing G; then higher prior wins.
+pub fn quality_rank_key(has: bool, prior: f32) -> (u8, f32) {
+    if has {
+        (1, prior)
+    } else {
+        (0, 0.0)
+    }
+}
+
+/// True when Content Fit (or diversity) may decide order between two known-G films.
+pub fn quality_near_tie(has_a: bool, ga: f32, has_b: bool, gb: f32) -> bool {
+    has_a && has_b && (ga - gb).abs() <= QUALITY_TIE_EPSILON
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +278,20 @@ mod tests {
             population_mean: pop,
             prior_m: PRIOR_M,
         }
+    }
+
+    #[test]
+    fn known_g_outranks_missing_even_if_prior_negative() {
+        assert_eq!(quality_rank_key(true, -0.1).0, 1);
+        assert_eq!(quality_rank_key(false, 0.0).0, 0);
+        assert!(quality_rank_key(true, -0.1) > quality_rank_key(false, 0.0));
+    }
+
+    #[test]
+    fn near_tie_only_when_both_known_within_eps() {
+        assert!(quality_near_tie(true, 0.10, true, 0.12));
+        assert!(!quality_near_tie(true, 0.10, true, 0.20));
+        assert!(!quality_near_tie(true, 0.0, false, 0.0));
     }
 
     #[test]

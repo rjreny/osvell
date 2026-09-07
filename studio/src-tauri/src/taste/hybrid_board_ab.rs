@@ -165,7 +165,7 @@ fn build_board_from_exam(
 
     let t1 = std::time::Instant::now();
     let semantic_map = score_candidates_from_cache(db, films, &examined);
-    let mut scored_pool = score_pool_with_semantic(&profile, &examined, &semantic_map);
+    let mut scored_pool = score_pool_with_semantic(&profile, &examined, &semantic_map, None);
     semantic::attach_semantic_clusters_from_db(db, &mut scored_pool.ranked);
     semantic::attach_semantic_clusters_from_db(db, &mut scored_pool.dropped_contextual);
     let score_ms = t1.elapsed().as_secs_f32() * 1000.0;

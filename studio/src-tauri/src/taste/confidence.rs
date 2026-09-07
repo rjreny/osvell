@@ -391,11 +391,10 @@ fn portable_person_loyalty(c: &ScoredCandidate) -> bool {
 const RELATED_ONLY_TOTAL_FLOOR: f32 = 0.06;
 
 pub fn occupies_new(c: &ScoredCandidate) -> bool {
-    if c.candidate.watchlist || unreleased_new_row(c) || tv_movie(c) {
+    if unreleased_new_row(c) || tv_movie(c) {
         return false;
     }
-    // C1: Content Fit_v1 decision layer. Recommended always; Exploratory fills.
-    // Legacy EvidenceGrade / neighbor floors / match floors do not admit or veto.
+    // Watchlist is state only — same C1 bands as every other candidate.
     match c.eligibility.state.as_str() {
         "recommended" | "exploratory" => true,
         "held" => false,
@@ -473,8 +472,31 @@ pub fn sort_workspace(rows: &mut [ScoredCandidate]) {
     rows.sort_by(rank_order);
 }
 
-/// Internal ranking. Content Fit_v1 total leads; predicted_fit and confidence break ties.
+/// Internal ranking for `taste-v1-quality-first-final`:
+/// known G > missing G → strict G when `|ΔG| > ε` → Content Fit only inside ε →
+/// confidence / candidate_fit / seeds / stable tmdb id.
 pub fn rank_order(a: &ScoredCandidate, b: &ScoredCandidate) -> std::cmp::Ordering {
+    use crate::taste::quality::{quality_near_tie, quality_rank_key, QUALITY_TIE_EPSILON};
+    let _ = QUALITY_TIE_EPSILON; // documented in quality_near_tie
+
+    let (ka, ga) = quality_rank_key(a.has_quality_prior, a.quality_prior);
+    let (kb, gb) = quality_rank_key(b.has_quality_prior, b.quality_prior);
+    kb.cmp(&ka).then_with(|| {
+        // Both missing → Content Fit; both known with |ΔG|>ε → G; near-tie → Content.
+        if ka == 0 && kb == 0 {
+            return content_then_confidence(a, b);
+        }
+        if quality_near_tie(a.has_quality_prior, a.quality_prior, b.has_quality_prior, b.quality_prior)
+        {
+            return content_then_confidence(a, b);
+        }
+        gb.partial_cmp(&ga)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| content_then_confidence(a, b))
+    })
+}
+
+fn content_then_confidence(a: &ScoredCandidate, b: &ScoredCandidate) -> std::cmp::Ordering {
     b.score
         .total
         .partial_cmp(&a.score.total)
@@ -634,6 +656,8 @@ mod tests {
                     "low_fit".into()
                 },
             },
+            quality_prior: 0.0,
+            has_quality_prior: false,
         }
     }
 
@@ -648,6 +672,43 @@ mod tests {
     fn with_total(mut c: ScoredCandidate, total: f32) -> ScoredCandidate {
         c.score.total = total;
         c
+    }
+
+    fn with_g(mut c: ScoredCandidate, prior: Option<f32>) -> ScoredCandidate {
+        match prior {
+            Some(g) => {
+                c.has_quality_prior = true;
+                c.quality_prior = g;
+            }
+            None => {
+                c.has_quality_prior = false;
+                c.quality_prior = 0.0;
+            }
+        }
+        c
+    }
+
+    #[test]
+    fn known_negative_g_outranks_missing_g_regardless_of_content() {
+        let known = with_g(with_total(row_with(vec![], false, false, 0.2, 1), 0.2), Some(-0.05));
+        let missing = with_g(with_total(row_with(vec![], false, false, 0.95, 2), 0.95), None);
+        assert_eq!(rank_order(&known, &missing), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn content_fit_only_breaks_near_g_ties() {
+        let lower_g_higher_fit =
+            with_g(with_total(row_with(vec![], false, false, 0.9, 1), 0.9), Some(0.10));
+        let higher_g_lower_fit =
+            with_g(with_total(row_with(vec![], false, false, 0.4, 2), 0.4), Some(0.20));
+        assert_eq!(
+            rank_order(&higher_g_lower_fit, &lower_g_higher_fit),
+            std::cmp::Ordering::Less
+        );
+
+        let a = with_g(with_total(row_with(vec![], false, false, 0.9, 3), 0.9), Some(0.10));
+        let b = with_g(with_total(row_with(vec![], false, false, 0.4, 4), 0.4), Some(0.12));
+        assert_eq!(rank_order(&a, &b), std::cmp::Ordering::Less);
     }
 
     #[test]

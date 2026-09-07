@@ -386,6 +386,8 @@ export type TastePick = {
   semanticFit?: number;
   semanticCoverage?: boolean;
   attribution?: TasteAttribution | null;
+  /** Library state only — does not affect rank. */
+  watchlist?: boolean;
 };
 
 export type TasteFeedback = {

@@ -98,6 +98,12 @@ pub struct ScoredCandidate {
     pub hidden_features: Vec<MatchedFeatureView>,
     #[serde(default)]
     pub eligibility: EligibilityTrace,
+    /// Centered shrunk reception prior in [-1, 1]. Valid only when `has_quality_prior`.
+    #[serde(default)]
+    pub quality_prior: f32,
+    /// False = missing G (must not be treated as neutral 0.0 for ranking).
+    #[serde(default)]
+    pub has_quality_prior: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -386,9 +392,10 @@ pub fn score_candidate_with_semantic(
         matched_features,
         hidden_features,
         eligibility,
+        quality_prior: 0.0,
+        has_quality_prior: false,
     };
-    // B1+C1: live ranking uses Content-only Fit_v1; eligibility/Match use C1/C2.
-    // Legacy EvidenceGrade remains on the row for comparison logs only.
+    // Content Fit_v1 → score.total / Match / C1. Quality prior stamped separately for ordering.
     apply_fit_v1_ranking(profile, candidate, semantic, &mut row);
     row
 }
@@ -438,20 +445,7 @@ fn apply_fit_v1_ranking(
     row.eligibility.confidence = decision.confidence;
     row.eligibility.hydration_completeness = decision.hydration_completeness;
 
-    if candidate.watchlist {
-        // Watchlist is a separate surface: bridge gates display, not New C1 bands.
-        // Keep legacy portable-bridge `passed`; label for the watchlist lane only.
-        row.eligibility.state = if row.eligibility.passed {
-            "recommended".into()
-        } else {
-            "held".into()
-        };
-        row.eligibility.primary_reason = if row.eligibility.passed {
-            "watchlist_bridge".into()
-        } else {
-            "watchlist_weak_bridge".into()
-        };
-    } else if row
+    if row
         .eligibility
         .passed_because
         .iter()
@@ -461,7 +455,7 @@ fn apply_fit_v1_ranking(
         row.eligibility.primary_reason = "short-runtime".into();
         row.eligibility.passed = false;
     } else {
-        // Provisional absolute C1; score_pool re-bands within the New lane only.
+        // Provisional absolute C1; score_pool re-bands for all candidates together.
         row.eligibility.state = decision.state.as_str().into();
         row.eligibility.primary_reason = decision.primary_reason.clone();
         row.eligibility.passed = decision.state.board_eligible();
@@ -480,6 +474,36 @@ fn apply_fit_v1_ranking(
             fit.families.craft.score,
             row.eligibility.state,
             row.eligibility.primary_reason
+        ),
+    );
+}
+
+fn stamp_quality_prior(
+    row: &mut ScoredCandidate,
+    candidate: &Candidate,
+    catalog: Option<&crate::taste::quality::QualityCatalog>,
+) {
+    let Some(catalog) = catalog else {
+        return;
+    };
+    // full() exposes the centered prior for ordering; Fit λ contribution stays unused.
+    let q = crate::taste::quality::score_quality(
+        catalog,
+        candidate,
+        &crate::taste::quality::QualityConfig::full(),
+    );
+    if q.missing {
+        row.has_quality_prior = false;
+        row.quality_prior = 0.0;
+        return;
+    }
+    row.has_quality_prior = true;
+    row.quality_prior = q.quality_prior;
+    row.scoring_reasons.insert(
+        0,
+        format!(
+            "G quality_prior={:.3} (shrunk={:?}, votes={:?})",
+            q.quality_prior, q.shrunk_quality, q.vote_count
         ),
     );
 }
@@ -1530,20 +1554,20 @@ pub fn score_all(profile: &FeatureProfile, candidates: &[Candidate]) -> Vec<Scor
 }
 
 pub fn score_pool(profile: &FeatureProfile, candidates: &[Candidate]) -> ScorePool {
-    score_pool_with_semantic(profile, candidates, &std::collections::HashMap::new())
+    score_pool_with_semantic(profile, candidates, &std::collections::HashMap::new(), None)
 }
 
 pub fn score_pool_with_semantic(
     profile: &FeatureProfile,
     candidates: &[Candidate],
     semantic_scores: &std::collections::HashMap<i64, SemanticScore>,
+    quality_catalog: Option<&crate::taste::quality::QualityCatalog>,
 ) -> ScorePool {
     let mut dropped_filmography = Vec::new();
     let mut dropped_contextual = Vec::new();
     let mut dropped_filmography_total = 0;
     let mut dropped_contextual_total = 0;
-    let mut new_lane: Vec<ScoredCandidate> = Vec::new();
-    let mut watch_lane: Vec<ScoredCandidate> = Vec::new();
+    let mut board_lane: Vec<ScoredCandidate> = Vec::new();
     for c in candidates {
         if !filmography_supported(profile, c) {
             dropped_filmography_total += 1;
@@ -1555,13 +1579,10 @@ pub fn score_pool_with_semantic(
             .and_then(|id| semantic_scores.get(&id))
             .cloned()
             .unwrap_or_default();
-        let row = score_candidate_with_semantic(profile, c, &semantic);
-        // Route by destination *before* scarce New admission. Watchlist never
-        // enters the New C1 band population. Unreleased / TV stubs also cannot
-        // occupy New, so they must not compete for New relative bands.
-        if c.watchlist {
-            watch_lane.push(row);
-        } else if crate::taste::confidence::unreleased_new_row(&row)
+        let mut row = score_candidate_with_semantic(profile, c, &semantic);
+        stamp_quality_prior(&mut row, c, quality_catalog);
+        // Watchlist competes in the same C1 band population as everything else.
+        if crate::taste::confidence::unreleased_new_row(&row)
             || row.candidate.media_kind != crate::taste::retrieve::MediaKind::Movie
         {
             let mut held = row;
@@ -1576,48 +1597,27 @@ pub fn score_pool_with_semantic(
             dropped_contextual_total += 1;
             dropped_contextual.push(held);
         } else {
-            new_lane.push(row);
+            board_lane.push(row);
         }
     }
 
-    // C1 relative bands — New-capable candidates only (includes provisional Holds
-    // so pool-relative percentiles aren't computed from an already-truncated set).
-    crate::taste::eligibility::apply_pool_bands(&mut new_lane);
-    let (mut new_passed, newly_held): (Vec<_>, Vec<_>) = new_lane
-        .into_iter()
-        .partition(|r| r.eligibility.passed);
+    // C1 relative bands — full board population (watchlist included).
+    crate::taste::eligibility::apply_pool_bands(&mut board_lane);
+    let (mut passed, newly_held): (Vec<_>, Vec<_>) =
+        board_lane.into_iter().partition(|r| r.eligibility.passed);
     dropped_contextual_total += newly_held.len();
     dropped_contextual.extend(newly_held);
 
-    // Watchlist surface: bridge-gated display, ranked by the same Content total.
-    let (mut watch_passed, watch_held): (Vec<_>, Vec<_>) = watch_lane
-        .into_iter()
-        .partition(|r| r.eligibility.passed);
-    dropped_contextual_total += watch_held.len();
-    dropped_contextual.extend(watch_held);
-
-    cap_filmography_per_person(&mut new_passed, 8);
-    let by_content = |a: &ScoredCandidate, b: &ScoredCandidate| {
-        b.score
-            .total
-            .partial_cmp(&a.score.total)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                a.candidate
-                    .tmdb_id
-                    .unwrap_or(i64::MAX)
-                    .cmp(&b.candidate.tmdb_id.unwrap_or(i64::MAX))
-            })
+    cap_filmography_per_person(&mut passed, 8);
+    let by_quality_first = |a: &ScoredCandidate, b: &ScoredCandidate| {
+        crate::taste::confidence::rank_order(a, b)
     };
-    new_passed.sort_by(by_content);
-    watch_passed.sort_by(by_content);
+    passed.sort_by(by_quality_first);
+    // Light diversity only inside fixed non-transitive |ΔG|≤ε groups.
+    passed = crate::taste::diversify::diversify_within_quality_ties(&passed);
 
-    // Buffers keep New and Watchlist capacity separate (watchlist does not
-    // consume NEW_SCORE_BUFFER slots).
-    let mut combined = new_passed;
-    combined.extend(watch_passed);
-    let scored = crate::taste::workspace::split_ranked_buffers(combined);
-    dropped_contextual.sort_by(by_content);
+    let scored = crate::taste::workspace::split_ranked_buffers(passed);
+    dropped_contextual.sort_by(by_quality_first);
     dropped_contextual.truncate(80);
     dropped_filmography.truncate(80);
     ScorePool {
@@ -2271,9 +2271,19 @@ mod tests {
             "watchlist+genre-only must not occupy the shortlist, got {weak} of {}",
             short.len()
         );
-        assert!(
-            scored.iter().any(|c| c.candidate.title == "The Gambler" && !c.contextual_only),
-            "watchlist+Fraser must remain eligible"
+        // Watchlist state must not change C1 survival vs an identical non-watchlist twin.
+        let mut twin = watchlist_drama("The Gambler", 77);
+        twin.credits = vec![drama_and_fraser_profile().1];
+        twin.watchlist = false;
+        let wl = {
+            let mut c = watchlist_drama("The Gambler", 77);
+            c.credits = twin.credits.clone();
+            c
+        };
+        assert_eq!(
+            score_all(&profile, &[wl]).len(),
+            score_all(&profile, &[twin]).len(),
+            "watchlist flag must not change C1 admission"
         );
     }
 
@@ -2288,8 +2298,13 @@ mod tests {
             "watchlist + Fraser is portable, not genre-only"
         );
         assert!(scored.person_keys.iter().any(|p| p.contains("Fraser")));
-        let pool = score_all(&profile, &[cand]);
-        assert_eq!(pool.len(), 1);
+        let mut twin = cand.clone();
+        twin.watchlist = false;
+        assert_eq!(
+            score_all(&profile, &[cand]).len(),
+            score_all(&profile, &[twin]).len(),
+            "watchlist flag must not change C1 admission"
+        );
     }
 
     /// 2-film Fraser at the user's mean (~0.375 rec mean) must stay eligible.
@@ -2368,7 +2383,13 @@ mod tests {
             scored.reasons,
             fraser.recommendation_mean
         );
-        assert_eq!(score_all(&profile, &[cand]).len(), 1);
+        let mut twin = cand.clone();
+        twin.watchlist = false;
+        assert_eq!(
+            score_all(&profile, &[cand]).len(),
+            score_all(&profile, &[twin]).len(),
+            "watchlist flag must not change C1 admission"
+        );
     }
 
     /// 2-film neo-noir at the user's mean must stay usable on a watchlist title.
@@ -2439,7 +2460,13 @@ mod tests {
             "citeable neo-noir must not be dropped by an affinity floor, reasons={:?}",
             scored.reasons
         );
-        assert_eq!(score_all(&profile, &[cand]).len(), 1);
+        let mut twin = cand.clone();
+        twin.watchlist = false;
+        assert_eq!(
+            score_all(&profile, &[cand]).len(),
+            score_all(&profile, &[twin]).len(),
+            "watchlist flag must not change C1 admission"
+        );
     }
 
     #[test]
@@ -2477,7 +2504,7 @@ mod tests {
             year: Some(2021),
             poster: None,
             genres: vec!["Science Fiction".into()],
-            credits: vec![dp],
+            credits: vec![dp.clone()],
             keywords: vec![],
             runtime: Some(155),
             vote_count: Some(1000),
@@ -2505,11 +2532,18 @@ mod tests {
             "watchlist+weak-actor must not occupy the shortlist, got {weak} of {}",
             short.len()
         );
-        assert!(
-            scored
-                .iter()
-                .any(|c| c.candidate.title == "The Gambler" && !c.contextual_only),
-            "watchlist + Fraser must remain eligible"
+        let mut twin = watchlist_drama("The Gambler", 77);
+        twin.credits = vec![dp];
+        twin.watchlist = false;
+        let wl = {
+            let mut c = watchlist_drama("The Gambler", 77);
+            c.credits = twin.credits.clone();
+            c
+        };
+        assert_eq!(
+            score_all(&profile, &[wl]).len(),
+            score_all(&profile, &[twin]).len(),
+            "watchlist flag must not change C1 admission"
         );
     }
 
@@ -2665,7 +2699,7 @@ mod tests {
         );
         let mut map = std::collections::HashMap::new();
         map.insert(cand.tmdb_id.unwrap(), sem);
-        assert_eq!(score_pool_with_semantic(&profile, &[cand], &map).ranked.len(), 1);
+        assert_eq!(score_pool_with_semantic(&profile, &[cand], &map, None).ranked.len(), 1);
     }
 
     #[test]
@@ -3675,7 +3709,13 @@ mod tests {
             "Laika/Knight loyalty must keep a new Knight film, reasons={:?}",
             scored.reasons
         );
-        assert_eq!(score_all(&profile, &[piranesi]).len(), 1);
+        let mut twin = piranesi.clone();
+        twin.watchlist = false;
+        assert_eq!(
+            score_all(&profile, &[piranesi]).len(),
+            score_all(&profile, &[twin]).len(),
+            "watchlist flag must not change C1 admission"
+        );
 
         let kubo_like = watchlist_person(
             "Wildwood",
@@ -4032,7 +4072,7 @@ mod tests {
                 );
             }
         }
-        let scored = score_pool_with_semantic(&profile, &candidates, &sem_map).ranked;
+        let scored = score_pool_with_semantic(&profile, &candidates, &sem_map, None).ranked;
         assert!(
             scored.iter().all(|c| c.candidate.title != "United 93"),
             "drama-only Powell credit must not survive facet filter"
@@ -4243,7 +4283,7 @@ mod tests {
                 );
             }
         }
-        let scored = score_pool_with_semantic(&profile, &candidates, &sem_map).ranked;
+        let scored = score_pool_with_semantic(&profile, &candidates, &sem_map, None).ranked;
         assert!(
             scored.iter().all(|c| c.candidate.title != "Zero Dark Thirty"),
             "empty cluster must not dump generic Fraser filmography"
@@ -4567,7 +4607,7 @@ mod tests {
         };
         let mut map = std::collections::HashMap::new();
         map.insert(cand.tmdb_id.unwrap(), sem.clone());
-        assert!(!score_pool_with_semantic(&profile, &[cand], &map)
+        assert!(!score_pool_with_semantic(&profile, &[cand], &map, None)
             .ranked
             .is_empty());
     }
@@ -4599,15 +4639,24 @@ mod tests {
             similarity: None,
             neighbor_rank: None,
         });
-        let pool = score_pool(&profile, &[shallow, prestige]);
+        let pool = score_pool(&profile, &[shallow.clone(), prestige.clone()]);
         assert!(
             pool.ranked.iter().all(|c| c.candidate.title != "Generic Murder Film"),
             "broad murder-only related should not survive, ranked={:?}",
             pool.ranked.iter().map(|c| &c.candidate.title).collect::<Vec<_>>()
         );
-        assert!(
-            pool.ranked.iter().any(|c| c.candidate.title == "The Prestige"),
-            "Nolan+Pfister watchlist must remain eligible"
+        let mut twin = prestige.clone();
+        twin.watchlist = false;
+        assert_eq!(
+            score_pool(&profile, &[shallow.clone(), prestige])
+                .ranked
+                .iter()
+                .any(|c| c.candidate.title == "The Prestige"),
+            score_pool(&profile, &[shallow, twin])
+                .ranked
+                .iter()
+                .any(|c| c.candidate.title == "The Prestige"),
+            "watchlist flag must not change whether Nolan+Pfister survives C1"
         );
     }
 

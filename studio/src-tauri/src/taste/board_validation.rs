@@ -424,7 +424,7 @@ pub fn run_live_board_validation(
 
     let t1 = Instant::now();
     let semantic_map = score_candidates_from_cache(db, films, &examined);
-    let mut scored_pool = score_pool_with_semantic(&profile, &examined, &semantic_map);
+    let mut scored_pool = score_pool_with_semantic(&profile, &examined, &semantic_map, None);
     crate::taste::semantic::attach_semantic_clusters_from_db(db, &mut scored_pool.ranked);
     crate::taste::semantic::attach_semantic_clusters_from_db(db, &mut scored_pool.dropped_contextual);
     let score_ms = t1.elapsed().as_secs_f32() * 1000.0;
@@ -694,7 +694,7 @@ pub fn run_live_board_validation(
     let concentration = build_concentration(&new_pool, &board);
 
     let mut notes = vec![
-        "Frozen v1: active top-2k retrieval, exam current/@1000, Content Fit_v1, Craft/Form/Continuity/Quality=0, C1, calibrated Match, D1.1 fit-tolerance (ε=0.0075) + embedding semantic_cluster.".into(),
+        "Frozen v1: quality-first G ordering, Content Fit C1/Match, Craft/Form/Continuity/Quality Fit λ=0, calibrated Match, light diversity only inside |ΔG|≤0.04.".into(),
         "Lane routing: C1 scarce admission on New-capable only; watchlist ranked as a separate surface.".into(),
         "judgment fields left empty for manual Good/Plausible/Bad/AlreadyKnownIssue labels.".into(),
         "diversifyDelta = finalBoardRank − preDiversifyContentRank (negative ⇒ promoted by D1).".into(),

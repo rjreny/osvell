@@ -367,6 +367,98 @@ pub(crate) fn fit_of(c: &ScoredCandidate) -> f32 {
     }
 }
 
+/// Light diversity inside fixed quality-equivalence groups.
+///
+/// Groups are built from an already quality-first-sorted list using the *anchor*
+/// (first / highest-G) of each group: a later film joins only if `|G - G_anchor| ≤ ε`
+/// (and same known/missing class). This prevents transitive widening
+/// (`A≈B`, `B≈C` ⇒ C above A when `|A−C| > ε`).
+pub fn diversify_within_quality_ties(ranked: &[ScoredCandidate]) -> Vec<ScoredCandidate> {
+    use crate::taste::quality::{quality_rank_key, QUALITY_TIE_EPSILON};
+
+    if ranked.len() <= 1 {
+        return ranked.to_vec();
+    }
+    let mut out = Vec::with_capacity(ranked.len());
+    let mut i = 0;
+    while i < ranked.len() {
+        let (ak, ag) = quality_rank_key(ranked[i].has_quality_prior, ranked[i].quality_prior);
+        let mut j = i + 1;
+        while j < ranked.len() {
+            let (ck, cg) = quality_rank_key(ranked[j].has_quality_prior, ranked[j].quality_prior);
+            if ck != ak {
+                break;
+            }
+            if ak == 1 && (ag - cg).abs() > QUALITY_TIE_EPSILON {
+                break;
+            }
+            j += 1;
+        }
+        let mut group: Vec<ScoredCandidate> = ranked[i..j].to_vec();
+        if group.len() > 1 {
+            light_reorder_quality_group(&mut group);
+        }
+        out.append(&mut group);
+        i = j;
+    }
+    out
+}
+
+fn light_reorder_quality_group(group: &mut Vec<ScoredCandidate>) {
+    // Soft cluster / person repetition penalty; Content Fit still dominates.
+    let mut remaining = std::mem::take(group);
+    let mut used_clusters: HashSet<String> = HashSet::new();
+    let mut used_people: HashSet<String> = HashSet::new();
+    let mut ordered = Vec::with_capacity(remaining.len());
+    while !remaining.is_empty() {
+        let best = remaining
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| {
+                pick_score(a, &used_clusters, &used_people)
+                    .partial_cmp(&pick_score(b, &used_clusters, &used_people))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| {
+                        a.candidate
+                            .tmdb_id
+                            .unwrap_or(i64::MAX)
+                            .cmp(&b.candidate.tmdb_id.unwrap_or(i64::MAX))
+                    })
+            })
+            .map(|(i, _)| i)
+            .unwrap();
+        let chosen = remaining.remove(best);
+        if let Some(c) = &chosen.candidate.semantic_cluster {
+            used_clusters.insert(c.clone());
+        }
+        for p in &chosen.person_keys {
+            used_people.insert(p.clone());
+        }
+        ordered.push(chosen);
+    }
+    *group = ordered;
+}
+
+fn pick_score(
+    c: &ScoredCandidate,
+    used_clusters: &HashSet<String>,
+    used_people: &HashSet<String>,
+) -> f32 {
+    let mut s = fit_of(c);
+    if let Some(cl) = &c.candidate.semantic_cluster {
+        if used_clusters.contains(cl) {
+            s -= 0.015;
+        }
+    }
+    let person_hits = c
+        .person_keys
+        .iter()
+        .filter(|p| used_people.contains(*p))
+        .count();
+    s -= 0.008 * person_hits.min(3) as f32;
+    s
+}
+
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -772,6 +864,8 @@ mod tests {
                 passed: true,
                 ..Default::default()
             },
+            quality_prior: 0.0,
+            has_quality_prior: false,
         }
     }
 
@@ -786,6 +880,29 @@ mod tests {
         assert_eq!(
             out.iter().map(|c| c.candidate.tmdb_id).collect::<Vec<_>>(),
             vec![Some(1), Some(2), Some(3)]
+        );
+    }
+
+    #[test]
+    fn quality_groups_use_anchor_not_transitive_chain() {
+        // A≈B and B≈C but |A−C| > ε — C must not enter A's group.
+        let mut a = row(1, 0.50, "A", "story", None, Some("emb:a"));
+        let mut b = row(2, 0.90, "B", "story", None, Some("emb:b"));
+        let mut c = row(3, 0.95, "C", "story", None, Some("emb:c"));
+        a.has_quality_prior = true;
+        a.quality_prior = 0.20;
+        b.has_quality_prior = true;
+        b.quality_prior = 0.17; // within ε of A
+        c.has_quality_prior = true;
+        c.quality_prior = 0.14; // within ε of B, but |A−C|=0.06 > ε
+        let out = diversify_within_quality_ties(&[a, b, c]);
+        let ids: Vec<_> = out.iter().map(|x| x.candidate.tmdb_id).collect();
+        // First group is only {A,B} (order may shuffle by Content Fit); C stays third.
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids[2], Some(3), "C must not chain into A's near-G group");
+        assert!(
+            ids[..2].contains(&Some(1)) && ids[..2].contains(&Some(2)),
+            "A and B stay in the anchor group, got {ids:?}"
         );
     }
 

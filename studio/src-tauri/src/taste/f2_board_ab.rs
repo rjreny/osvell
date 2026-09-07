@@ -95,7 +95,7 @@ fn build_one(
     let examined = select_fair_pool(pool.by_key, 1_000);
 
     let semantic_map = score_candidates_from_cache(db, films, &examined);
-    let mut scored_pool = score_pool_with_semantic(&profile, &examined, &semantic_map);
+    let mut scored_pool = score_pool_with_semantic(&profile, &examined, &semantic_map, None);
     semantic::attach_semantic_clusters_from_db(db, &mut scored_pool.ranked);
     semantic::attach_semantic_clusters_from_db(db, &mut scored_pool.dropped_contextual);
 

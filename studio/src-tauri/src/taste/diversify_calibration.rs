@@ -242,7 +242,7 @@ fn evaluate_fold(
     )?;
     let candidates = select_fair_pool(pool.by_key, 1000);
     let semantic = score_candidates_from_cache(db, &inputs.training_films, &candidates);
-    let mut scored = score_pool_with_semantic(&inputs.profile, &candidates, &semantic).ranked;
+    let mut scored = score_pool_with_semantic(&inputs.profile, &candidates, &semantic, None).ranked;
     crate::taste::semantic::attach_semantic_clusters_from_db(db, &mut scored);
     let mut eligible: Vec<ScoredCandidate> = scored.into_iter().filter(|c| state_ok(c)).collect();
     eligible.sort_by(|a, b| {

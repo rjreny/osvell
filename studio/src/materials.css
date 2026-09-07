@@ -3118,6 +3118,14 @@ html[data-theme="light"] .ghost {
   color: var(--text-muted);
 }
 
+.taste-watchlist-badge {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
 .taste-fb,
 .taste-actions {
   display: flex;

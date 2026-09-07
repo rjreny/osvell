@@ -696,6 +696,7 @@ pub fn run_replay(
         &inputs.profile,
         &retrieved.candidates,
         &semantic_scores,
+        None,
     );
     let baseline_ids = ids_of(&baseline.ranked);
     let revised_ids = ids_of(&revised.ranked);
@@ -948,6 +949,8 @@ mod tests {
                 evidence_grade: grade,
                 ..Default::default()
             },
+            quality_prior: 0.0,
+            has_quality_prior: false,
         }
     }
 
@@ -1551,7 +1554,7 @@ mod tests {
         let semantic_map =
             crate::taste::semantic::score_candidates_from_cache(&db, &films, &examined);
         let mut scored =
-            crate::taste::score::score_pool_with_semantic(&profile, &examined, &semantic_map);
+            crate::taste::score::score_pool_with_semantic(&profile, &examined, &semantic_map, None);
         crate::taste::semantic::attach_semantic_clusters_from_db(&db, &mut scored.ranked);
         let ws = workspace::assemble(&scored.ranked);
         assert!(
@@ -2597,6 +2600,8 @@ mod tests {
                         "low_fit".into()
                     },
                 },
+                quality_prior: 0.0,
+                has_quality_prior: false,
             }
         }
 

@@ -179,6 +179,8 @@ mod tests {
                 evidence_grade: crate::taste::explain::EvidenceGrade::None,
                 ..Default::default()
             },
+            quality_prior: 0.0,
+            has_quality_prior: false,
         }
     }
 

@@ -9,11 +9,15 @@ pub const WATCHLIST_SCORE_BUFFER: usize = 50;
 pub const NEW_MAX: usize = 50;
 /// High-value curated front of New — D1.1 scarce-slot policy (F2 OFF for v1).
 pub const FEATURED_MAX: usize = 12;
+#[allow(dead_code)] // retained for experiment / legacy board-validation helpers
 pub const WATCHLIST_MAX: usize = 30;
+#[allow(dead_code)]
 pub const EXPLORATION_MAX: usize = 0;
 pub const NEW_FILMOGRAPHY_PER_PERSON: usize = 6;
-/// Frozen v1: active-2k + Content Fit_v1 + C1 + D1.1 ε=.0075. F2/hybrid OFF.
-pub const ALGORITHM_VERSION: &str = "taste-v1-active2k-d1";
+/// Frozen v1: quality-first ordering + Content Fit C1/Match; unified board.
+pub const ALGORITHM_VERSION: &str = "taste-v1-quality-first-final";
+/// v2 experiment stamp (research closed — not for production cutover).
+pub const ALGORITHM_VERSION_V2: &str = "taste-v2-bounded-experiment";
 
 #[derive(Debug, Clone, Default)]
 pub struct Workspace {
@@ -25,29 +29,15 @@ pub struct Workspace {
 }
 
 pub fn split_ranked_buffers(ranked: Vec<ScoredCandidate>) -> Vec<ScoredCandidate> {
-    let mut new_buf = Vec::new();
-    let mut watch_buf = Vec::new();
-    for row in ranked {
-        if row.candidate.watchlist {
-            if watch_buf.len() < WATCHLIST_SCORE_BUFFER {
-                watch_buf.push(row);
-            }
-        } else if new_buf.len() < NEW_SCORE_BUFFER {
-            new_buf.push(row);
-        }
-    }
-    new_buf.extend(watch_buf);
-    new_buf
+    // Single pool: watchlist is state, not a separate buffer lane.
+    ranked.into_iter().take(NEW_SCORE_BUFFER + WATCHLIST_SCORE_BUFFER).collect()
 }
 
 pub fn eligible(row: &ScoredCandidate) -> bool {
     if row.candidate.tmdb_id.is_none() || row.candidate.media_kind != MediaKind::Movie {
         return false;
     }
-    if row.candidate.watchlist {
-        // Watchlist still needs a usable bridge; C1 state is for New.
-        return row.eligibility.passed;
-    }
+    // Same C1 for every candidate — watchlist does not change admission.
     match row.eligibility.state.as_str() {
         "recommended" | "exploratory" => true,
         "held" => false,
@@ -56,47 +46,41 @@ pub fn eligible(row: &ScoredCandidate) -> bool {
 }
 
 pub fn assemble(ranked: &[ScoredCandidate]) -> Workspace {
-    // V1 freeze: D1.1 Featured only. F2 stays experimental (`light_with_f2`).
-    assemble_with_diversify(ranked, &DiversifyConfig::light())
+    // Default unified board: strict Content order, no D1.1 mutation.
+    assemble_unified(ranked)
 }
 
+/// Experimental path that still applies D1.1 Featured reorder. Not production.
 pub fn assemble_with_diversify(ranked: &[ScoredCandidate], cfg: &DiversifyConfig) -> Workspace {
+    let mut ws = assemble_unified(ranked);
+    ws.new_picks = diversify_board_featured(&ws.new_picks, cfg, Some(FEATURED_MAX));
+    ws.new_picks.truncate(NEW_MAX);
+    ws
+}
+
+/// One pool → same C1 → quality-first rank → top min(50, eligible). Watchlist is metadata only.
+pub fn assemble_unified(ranked: &[ScoredCandidate]) -> Workspace {
     let pool: Vec<_> = ranked.iter().filter(|c| eligible(c)).cloned().collect();
-    let new_pool: Vec<_> = pool
+    let board_pool: Vec<_> = pool
         .iter()
         .filter(|c| confidence::occupies_new(c))
         .cloned()
         .collect();
-    let mut watch_pool: Vec<_> = pool
-        .iter()
-        .filter(|c| c.candidate.watchlist)
-        .cloned()
-        .collect();
 
-    // Content-ordered inventory (~50), then Featured-N via D1.1(+F2).
-    let mut new_picks = shortlist_new_pool(&new_pool, NEW_MAX);
+    // Cap, not quota: only fill from eligible C1 rows (recommended then exploratory).
+    let mut new_picks = shortlist_new_pool(&board_pool, NEW_MAX);
     cap_new_filmography(&mut new_picks, NEW_FILMOGRAPHY_PER_PERSON);
     new_picks.retain(|c| confidence::occupies_new(c));
-    refill_new_without_resume(&mut new_picks, &new_pool, NEW_FILMOGRAPHY_PER_PERSON);
-    new_picks = diversify_board_featured(&new_picks, cfg, Some(FEATURED_MAX));
+    refill_new_without_resume(&mut new_picks, &board_pool, NEW_FILMOGRAPHY_PER_PERSON);
+    // Preserve quality-first order after filmography caps (re-sort).
+    new_picks.sort_by(confidence::rank_order);
     new_picks.truncate(NEW_MAX);
-
-    confidence::sort_workspace(&mut watch_pool);
-    watch_pool.truncate(WATCHLIST_MAX);
-
-    let mut explore_picks: Vec<_> = pool
-        .iter()
-        .filter(|c| confidence::occupies_explore(c))
-        .cloned()
-        .collect();
-    confidence::sort_workspace(&mut explore_picks);
-    explore_picks.truncate(EXPLORATION_MAX);
 
     Workspace {
         pre_feedback_pool: pool,
         new_picks,
-        explore_picks,
-        watchlist_picks: watch_pool,
+        explore_picks: Vec::new(),
+        watchlist_picks: Vec::new(),
     }
 }
 
@@ -105,8 +89,7 @@ fn shortlist_new_pool(pool: &[ScoredCandidate], target: usize) -> Vec<ScoredCand
         return Vec::new();
     }
     let target = target.min(pool.len());
-    // C1: Recommended first, then Exploratory — Content fit order for inventory.
-    // Featured scarce-slot policy (D1.1/F2) is applied once after filmography caps.
+    // C1: Recommended first, then Exploratory — quality-first order within each band.
     let mut recommended: Vec<_> = pool
         .iter()
         .filter(|c| c.eligibility.state == "recommended")
@@ -117,30 +100,16 @@ fn shortlist_new_pool(pool: &[ScoredCandidate], target: usize) -> Vec<ScoredCand
         .filter(|c| c.eligibility.state == "exploratory")
         .cloned()
         .collect();
-    let mut fallback: Vec<_> = pool
-        .iter()
-        .filter(|c| c.eligibility.state != "recommended" && c.eligibility.state != "exploratory")
-        .cloned()
-        .collect();
 
-    let by_fit = |a: &ScoredCandidate, b: &ScoredCandidate| {
-        crate::taste::diversify::fit_of(b)
-            .partial_cmp(&crate::taste::diversify::fit_of(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.candidate.title.cmp(&b.candidate.title))
-    };
-    recommended.sort_by(by_fit);
-    exploratory.sort_by(by_fit);
-    fallback.sort_by(by_fit);
+    recommended.sort_by(confidence::rank_order);
+    exploratory.sort_by(confidence::rank_order);
 
     let mut selected = Vec::new();
     selected.extend(recommended.into_iter().take(target));
     if selected.len() < target {
         selected.extend(exploratory.into_iter().take(target - selected.len()));
     }
-    if selected.len() < target {
-        selected.extend(fallback.into_iter().take(target - selected.len()));
-    }
+    // Cap not quota: do not pull held/fallback rows just to manufacture NEW_MAX.
     selected
 }
 
@@ -412,11 +381,13 @@ mod tests {
                     "low_fit".into()
                 },
             },
+            quality_prior: 0.0,
+            has_quality_prior: false,
         }
     }
 
     #[test]
-    fn separate_buffers_keep_watchlist_when_new_floods() {
+    fn unified_buffer_includes_watchlist_without_separate_lane() {
         let mut ranked = Vec::new();
         for i in 0..300 {
             ranked.push(row(1000 + i, false, 8, 0.9 - (i as f32) * 0.001));
@@ -425,18 +396,19 @@ mod tests {
             ranked.push(row(i, true, 8, 0.2));
         }
         ranked.sort_by(|a, b| {
-            b.score
-                .total
-                .partial_cmp(&a.score.total)
+            crate::taste::diversify::fit_of(b)
+                .partial_cmp(&crate::taste::diversify::fit_of(a))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         let buffered = split_ranked_buffers(ranked);
-        let watch = buffered.iter().filter(|c| c.candidate.watchlist).count();
-        assert_eq!(watch, 40.min(WATCHLIST_SCORE_BUFFER));
+        assert_eq!(
+            buffered.len(),
+            NEW_SCORE_BUFFER + WATCHLIST_SCORE_BUFFER,
+            "single buffer takes combined capacity"
+        );
         let ws = assemble(&buffered);
-        assert_eq!(ws.watchlist_picks.len(), 30);
+        assert!(ws.watchlist_picks.is_empty());
         assert!(ws.new_picks.len() <= NEW_MAX);
-        assert!(ws.new_picks.iter().all(|c| !c.candidate.watchlist));
     }
 
     #[test]
@@ -450,7 +422,11 @@ mod tests {
         }
         let ws = assemble(&ranked);
         assert_eq!(ws.new_picks.len(), NEW_MAX);
-        assert_eq!(ws.watchlist_picks.len(), WATCHLIST_MAX);
+        assert!(ws.watchlist_picks.is_empty(), "watchlist is state on unified picks");
+        assert!(
+            ws.new_picks.iter().any(|c| c.candidate.watchlist),
+            "watchlist titles compete in the unified board"
+        );
     }
 
     #[test]
@@ -469,13 +445,34 @@ mod tests {
     }
 
     #[test]
-    fn displayed_new_order_is_content_fit_first() {
-        let mut low_fit = row(1, false, 8, 0.99);
-        low_fit.eligibility.predicted_fit = 0.70;
-        let mut high_fit = row(2, false, 8, 0.01);
-        high_fit.eligibility.predicted_fit = 0.80;
-        let ws = assemble(&[low_fit, high_fit]);
-        assert_eq!(ws.new_picks[0].candidate.tmdb_id, Some(2));
+    fn displayed_new_order_is_quality_first_then_content_fit() {
+        let mut lower_g = row(1, false, 8, 0.99);
+        lower_g.has_quality_prior = true;
+        lower_g.quality_prior = 0.05;
+        lower_g.eligibility.predicted_fit = 0.90;
+        let mut higher_g = row(2, false, 8, 0.01);
+        higher_g.has_quality_prior = true;
+        higher_g.quality_prior = 0.20;
+        higher_g.eligibility.predicted_fit = 0.50;
+        let ws = assemble(&[lower_g, higher_g]);
+        assert_eq!(
+            ws.new_picks[0].candidate.tmdb_id,
+            Some(2),
+            "known G must dominate Content Fit outside the ε window"
+        );
+
+        let mut near_low = row(3, false, 8, 0.40);
+        near_low.has_quality_prior = true;
+        near_low.quality_prior = 0.10;
+        let mut near_high = row(4, false, 8, 0.85);
+        near_high.has_quality_prior = true;
+        near_high.quality_prior = 0.12;
+        let ws2 = assemble(&[near_low, near_high]);
+        assert_eq!(
+            ws2.new_picks[0].candidate.tmdb_id,
+            Some(4),
+            "within |ΔG|≤ε Content Fit may break the tie"
+        );
     }
 
     #[test]
@@ -871,34 +868,27 @@ mod tests {
         ];
         let ws = assemble(&ranked);
         let mut seen = std::collections::HashSet::new();
-        for c in ws
-            .new_picks
-            .iter()
-            .chain(ws.explore_picks.iter())
-            .chain(ws.watchlist_picks.iter())
-        {
+        for c in ws.new_picks.iter() {
             let id = c.candidate.tmdb_id.unwrap();
-            assert!(seen.insert(id), "duplicate tmdb {id} across boards");
+            assert!(seen.insert(id), "duplicate tmdb {id} on board");
         }
-        assert!(ws.watchlist_picks.iter().all(|c| c.candidate.watchlist));
-        assert!(ws.explore_picks.iter().all(|c| !c.candidate.watchlist));
-        assert!(ws.new_picks.iter().all(|c| !c.candidate.watchlist));
+        assert!(ws.watchlist_picks.is_empty());
+        assert!(ws.new_picks.iter().any(|c| c.candidate.watchlist));
     }
 
     #[test]
-    fn watchlist_below_match_floor_still_assembles() {
+    fn watchlist_uses_same_c1_as_non_watchlist() {
+        // Weak watchlist row that fails C1 must not get a free pass onto the board.
         let mut low = row(7, true, 2, 0.2);
         low.matched_features.clear();
         low.person_keys.clear();
         low.positive_features.clear();
-        assert!(
-            crate::taste::confidence::legacy_match_score(&low)
-                < crate::taste::confidence::MATCH_SCORE_FLOOR
-                || low.eligibility.predicted_fit < 0.5
-        );
+        low.eligibility.state = "held".into();
+        low.eligibility.passed = false;
+        low.eligibility.predicted_fit = 0.30;
+        low.eligibility.primary_reason = "low_fit".into();
         let ws = assemble(&[low]);
-        assert_eq!(ws.watchlist_picks.len(), 1);
-        assert_eq!(ws.watchlist_picks[0].candidate.tmdb_id, Some(7));
+        assert!(ws.watchlist_picks.is_empty());
         assert!(ws.new_picks.is_empty());
     }
 
