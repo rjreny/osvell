@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "osvell"
-version = "0.15.4"
+version = "0.15.5"
 dependencies = [
  "chrono",
  "hex",

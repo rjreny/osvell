@@ -56,22 +56,35 @@ fn default_semantic_fit() -> f32 {
 
 impl CandidateScore {
     pub fn clamp_components(&mut self) {
-        self.content = self.content.clamp(-1.0, 1.0);
-        self.tmdb_related = self.tmdb_related.clamp(0.0, 1.0);
-        self.friend_affinity = self.friend_affinity.clamp(-1.0, 1.0);
-        self.recent_taste = self.recent_taste.clamp(-1.0, 1.0);
-        self.watchlist = self.watchlist.clamp(0.0, 1.0);
-        self.novelty = self.novelty.clamp(-1.0, 1.0);
-        self.negative_evidence = self.negative_evidence.clamp(-1.0, 0.0);
-        self.semantic_fit = self.semantic_fit.clamp(0.0, 1.0);
-        self.total = (W_CONTENT * self.content
-            + W_TMDB * self.tmdb_related
-            + W_FRIEND * self.friend_affinity
-            + W_RECENT * self.recent_taste
-            + W_WATCHLIST * self.watchlist
-            + W_NOVELTY * self.novelty
-            + W_NEGATIVE * self.negative_evidence)
-            .clamp(-1.5, 1.5);
+        self.content = finite_clamp(self.content, -1.0, 1.0, 0.0);
+        self.tmdb_related = finite_clamp(self.tmdb_related, 0.0, 1.0, 0.0);
+        self.friend_affinity = finite_clamp(self.friend_affinity, -1.0, 1.0, 0.0);
+        self.recent_taste = finite_clamp(self.recent_taste, -1.0, 1.0, 0.0);
+        self.watchlist = finite_clamp(self.watchlist, 0.0, 1.0, 0.0);
+        self.novelty = finite_clamp(self.novelty, -1.0, 1.0, 0.0);
+        self.negative_evidence = finite_clamp(self.negative_evidence, -1.0, 0.0, 0.0);
+        self.semantic_fit = finite_clamp(self.semantic_fit, 0.0, 1.0, 0.5);
+        self.total = finite_clamp(
+            W_CONTENT * self.content
+                + W_TMDB * self.tmdb_related
+                + W_FRIEND * self.friend_affinity
+                + W_RECENT * self.recent_taste
+                + W_WATCHLIST * self.watchlist
+                + W_NOVELTY * self.novelty
+                + W_NEGATIVE * self.negative_evidence,
+            -1.5,
+            1.5,
+            0.0,
+        );
+    }
+}
+
+#[inline]
+fn finite_clamp(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        fallback
     }
 }
 
@@ -521,7 +534,11 @@ fn stamp_quality_prior(
         return;
     }
     row.has_quality_prior = true;
-    row.quality_prior = q.quality_prior;
+    row.quality_prior = if q.quality_prior.is_finite() {
+        q.quality_prior.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
     row.scoring_reasons.insert(
         0,
         format!(

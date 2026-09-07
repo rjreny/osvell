@@ -416,8 +416,7 @@ fn light_reorder_quality_group(group: &mut Vec<ScoredCandidate>) {
             .enumerate()
             .max_by(|(_, a), (_, b)| {
                 pick_score(a, &used_clusters, &used_people)
-                    .partial_cmp(&pick_score(b, &used_clusters, &used_people))
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .total_cmp(&pick_score(b, &used_clusters, &used_people))
                     .then_with(|| {
                         a.candidate
                             .tmdb_id
@@ -501,8 +500,7 @@ pub fn assign_semantic_clusters(
 
     indexed.sort_by(|&a, &b| {
         fit_of(&rows[b])
-            .partial_cmp(&fit_of(&rows[a]))
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&fit_of(&rows[a]))
             .then_with(|| {
                 rows[a]
                     .candidate
@@ -546,14 +544,8 @@ fn sort_by_fit(ranked: &[ScoredCandidate]) -> Vec<ScoredCandidate> {
     let mut ordered = ranked.to_vec();
     ordered.sort_by(|a, b| {
         fit_of(b)
-            .partial_cmp(&fit_of(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                b.score
-                    .total
-                    .partial_cmp(&a.score.total)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .total_cmp(&fit_of(a))
+            .then_with(|| b.score.total.total_cmp(&a.score.total))
             .then_with(|| {
                 a.candidate
                     .tmdb_id

@@ -490,34 +490,25 @@ pub fn rank_order(a: &ScoredCandidate, b: &ScoredCandidate) -> std::cmp::Orderin
         {
             return content_then_confidence(a, b);
         }
-        gb.partial_cmp(&ga)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| content_then_confidence(a, b))
+        // total_cmp: NaN must not collapse to Equal or sort panics on total order.
+        gb.total_cmp(&ga).then_with(|| content_then_confidence(a, b))
     })
 }
 
 fn content_then_confidence(a: &ScoredCandidate, b: &ScoredCandidate) -> std::cmp::Ordering {
     b.score
         .total
-        .partial_cmp(&a.score.total)
-        .unwrap_or(std::cmp::Ordering::Equal)
+        .total_cmp(&a.score.total)
         .then_with(|| {
             b.eligibility
                 .predicted_fit
-                .partial_cmp(&a.eligibility.predicted_fit)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.eligibility.predicted_fit)
         })
-        .then_with(|| {
-            b.eligibility
-                .confidence
-                .partial_cmp(&a.eligibility.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        .then_with(|| b.eligibility.confidence.total_cmp(&a.eligibility.confidence))
         .then_with(|| {
             b.eligibility
                 .candidate_fit
-                .partial_cmp(&a.eligibility.candidate_fit)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.eligibility.candidate_fit)
         })
         .then_with(|| {
             crate::taste::score::unique_loved_rec_seeds(b)
@@ -709,6 +700,18 @@ mod tests {
         let a = with_g(with_total(row_with(vec![], false, false, 0.9, 3), 0.9), Some(0.10));
         let b = with_g(with_total(row_with(vec![], false, false, 0.4, 4), 0.4), Some(0.12));
         assert_eq!(rank_order(&a, &b), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn rank_order_survives_nan_scores() {
+        let mut rows = vec![
+            with_g(with_total(row_with(vec![], false, false, 0.8, 1), 0.8), Some(0.1)),
+            with_g(with_total(row_with(vec![], false, false, 0.4, 2), f32::NAN), Some(0.2)),
+            with_g(with_total(row_with(vec![], false, false, 0.6, 3), 0.6), Some(f32::NAN)),
+            with_g(with_total(row_with(vec![], false, false, f32::NAN, 4), 0.5), None),
+        ];
+        rows.sort_by(rank_order);
+        assert_eq!(rows.len(), 4);
     }
 
     #[test]

@@ -102,7 +102,7 @@ pub fn bands_from_fits(fits: &[f32]) -> EligibilityBands {
         return EligibilityBands::absolute_fallback();
     }
     let mut sorted = fits.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| a.total_cmp(b));
     let mut poor = percentile(&sorted, 0.40).max(ABSOLUTE_FLOOR);
     let mut soft = percentile(&sorted, 0.55).max(poor + 0.01);
     let mut good = percentile(&sorted, 0.70).max(soft + 0.01);
