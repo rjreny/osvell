@@ -163,7 +163,7 @@ pub fn letterboxd_oembed_poster(uri: &str) -> Result<Option<String>, String> {
     let mut last_err = None;
     for url in endpoints {
         match ureq::get(&url)
-            .set("User-Agent", "Studio/0.1 (local film app)")
+            .set("User-Agent", "Osvell/0.1 (local film app)")
             .timeout(std::time::Duration::from_secs(15))
             .call()
         {
@@ -191,7 +191,7 @@ pub fn letterboxd_page_metadata(uri: &str) -> Result<SourceMovieMeta, String> {
         return Ok(SourceMovieMeta::default());
     };
     let body = ureq::get(&page)
-        .set("User-Agent", "Studio/0.1 (local film app)")
+        .set("User-Agent", "Osvell/0.1 (local film app)")
         .timeout(std::time::Duration::from_secs(15))
         .call()
         .map_err(|error| error.to_string())?
@@ -365,7 +365,7 @@ fn wikipedia_film_poster(title: &str, year: Option<i32>) -> Result<Option<String
         percent_encode(&query)
     );
     let body = ureq::get(&url)
-        .set("User-Agent", "Studio/0.1 (local film app)")
+        .set("User-Agent", "Osvell/0.1 (local film app)")
         .timeout(std::time::Duration::from_secs(12))
         .call()
         .map_err(|error| error.to_string())?
@@ -379,7 +379,7 @@ fn wikipedia_film_poster(title: &str, year: Option<i32>) -> Result<Option<String
         percent_encode(&article_title)
     );
     let image_body = ureq::get(&image_url)
-        .set("User-Agent", "Studio/0.1 (local film app)")
+        .set("User-Agent", "Osvell/0.1 (local film app)")
         .timeout(std::time::Duration::from_secs(12))
         .call()
         .map_err(|error| error.to_string())?

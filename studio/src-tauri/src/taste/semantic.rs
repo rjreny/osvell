@@ -448,9 +448,9 @@ fn request_embeddings(key: &str, inputs: &[String]) -> Result<Vec<Vec<f32>>, Str
         .post(EMBEDDING_ENDPOINT)
         .set("Authorization", &format!("Bearer {key}"))
         .set("Content-Type", "application/json")
-        .set("HTTP-Referer", "https://github.com/rjreny/studio")
-        .set("X-Title", "Studio Taste Embeddings")
-        .set("User-Agent", "Studio/0.10 (local film app)")
+        .set("HTTP-Referer", "https://github.com/rjreny/osvell")
+        .set("X-Title", "Osvell Taste Embeddings")
+        .set("User-Agent", "Osvell/0.10 (local film app)")
         .send_string(&body.to_string())
     {
         Ok(resp) => resp.into_string().map_err(|e| e.to_string())?,

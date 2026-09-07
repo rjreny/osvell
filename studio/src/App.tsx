@@ -434,7 +434,7 @@ export default function App() {
                 <svg viewBox="0 0 24 24"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14" /></svg>
               </span>
               <div className="activity-copy">
-                <strong>Studio {availableUpdate} is ready</strong>
+                <strong>Osvell {availableUpdate} is ready</strong>
                 <span>Install the latest improvements.</span>
               </div>
               <button className="update-toast-action" type="button" onClick={() => void installAvailableUpdate()}>
@@ -459,7 +459,7 @@ export default function App() {
       {palette ? (
         <div className="overlay" onMouseDown={closePalette}>
           <div className="palette glass" onMouseDown={(e) => e.stopPropagation()}>
-            <input autoFocus placeholder="Search Studio" readOnly />
+            <input autoFocus placeholder="Search Osvell" readOnly />
             {NAV.map((item) => (
               <button
                 key={item.id}

@@ -69,8 +69,8 @@ fn read_zip_texts(path: String) -> Result<HashMap<String, String>, String> {
     Ok(out)
 }
 
-const STUDIO_UA: &str = concat!(
-    "Studio/",
+const OSVELL_UA: &str = concat!(
+    "Osvell/",
     env!("CARGO_PKG_VERSION"),
     " (personal Letterboxd RSS reader)"
 );
@@ -85,7 +85,7 @@ pub fn fetch_url(url: &str) -> Result<String, String> {
         return Err("blocked host".into());
     }
     ureq::get(url)
-        .set("User-Agent", STUDIO_UA)
+        .set("User-Agent", OSVELL_UA)
         .set(
             "Accept",
             "application/rss+xml, application/xml, text/xml, */*",
@@ -129,7 +129,7 @@ pub fn fetch_rss(url: &str, etag: Option<&str>) -> RssFetch {
         return RssFetch::Failed("blocked host".into());
     }
     let mut req = ureq::get(url)
-        .set("User-Agent", STUDIO_UA)
+        .set("User-Agent", OSVELL_UA)
         .set(
             "Accept",
             "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",

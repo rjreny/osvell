@@ -41,7 +41,7 @@ vi.mock("../../platform/install", () => ({
   launchUninstaller: vi.fn(),
   openDataFolder: vi.fn(),
   openLogFile: vi.fn(),
-  resetStudioData: vi.fn(),
+  resetAppData: vi.fn(),
 }));
 vi.mock("../../platform/log", () => ({ log: vi.fn() }));
 vi.mock("../../platform/updater", () => ({
@@ -61,13 +61,13 @@ const emptyCoverage: LibraryCoverage = {
 };
 
 const sampleInstall: InstallInfo = {
-  version: "0.12.3",
+  version: "0.14.1",
   installKind: "installed",
-  appDataDir: "C:\\Users\\Ryan\\AppData\\Roaming\\Studio",
-  databasePath: "C:\\Users\\Ryan\\AppData\\Roaming\\Studio\\studio.db",
-  executablePath: "C:\\Program Files\\Studio\\studio.exe",
-  uninstallerPath: "C:\\Program Files\\Studio\\uninstall.exe",
-  logPath: "C:\\Users\\Ryan\\AppData\\Roaming\\Studio\\studio.log",
+  appDataDir: "C:\\Users\\Ryan\\AppData\\Roaming\\com.rjreny.studio",
+  databasePath: "C:\\Users\\Ryan\\AppData\\Roaming\\com.rjreny.studio\\studio.db",
+  executablePath: "C:\\Users\\Ryan\\AppData\\Local\\Studio\\studio.exe",
+  uninstallerPath: "C:\\Users\\Ryan\\AppData\\Local\\Studio\\uninstall.exe",
+  logPath: "C:\\Users\\Ryan\\AppData\\Roaming\\com.rjreny.studio\\studio.log",
   dataBytes: 2048,
 };
 
@@ -254,13 +254,13 @@ describe("SettingsView", () => {
     expect(onTheme).toHaveBeenCalledWith("dark");
   });
 
-  it("presents Studio blue and System as quiet accent radios and applies a selection", () => {
+  it("presents Osvell blue and System as quiet accent radios and applies a selection", () => {
     const onAccent = vi.fn();
     renderSettings({ onAccent });
     fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
 
     const accentChoices = within(screen.getByRole("radiogroup", { name: "Accent" }));
-    expect(accentChoices.getByRole("radio", { name: "Studio blue" })).toBeInTheDocument();
+    expect(accentChoices.getByRole("radio", { name: "Osvell blue" })).toBeInTheDocument();
     fireEvent.click(accentChoices.getByRole("radio", { name: "System" }));
     expect(onAccent).toHaveBeenCalledWith("system");
   });

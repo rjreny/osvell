@@ -1,4 +1,4 @@
-# Studio Film Library — Design Contract
+# Osvell Film Library — Design Contract
 
 ## Visual direction
 

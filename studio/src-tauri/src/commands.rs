@@ -770,7 +770,7 @@ pub fn update_preflight(app: AppHandle) -> Result<UpdatePreflight, String> {
     }
 
     let response = ureq::get(&endpoint)
-        .set("User-Agent", "Studio/0.1 (update check)")
+        .set("User-Agent", "Osvell/0.1 (update check)")
         .set("Accept", "application/json")
         .call();
 

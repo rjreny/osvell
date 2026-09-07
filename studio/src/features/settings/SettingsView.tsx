@@ -29,7 +29,7 @@ import {
   launchUninstaller,
   openDataFolder,
   openLogFile,
-  resetStudioData,
+  resetAppData,
 } from "../../platform/install";
 import { log } from "../../platform/log";
 import {
@@ -212,7 +212,7 @@ export function SettingsView({
       if (!path) return;
       setBusy(true);
       await importExportZip(path);
-      onStatus("Importing ZIP in the background — you can keep using Studio");
+      onStatus("Importing ZIP in the background — you can keep using Osvell");
       setBusy(false);
     } catch (err) {
       log("error", "settings import failed", err);
@@ -324,14 +324,14 @@ export function SettingsView({
   async function confirmResetData() {
     const ok = await ask(
       "This removes your library, friends, posters, and saved preferences from this device. It cannot be undone.",
-      { title: "Reset Studio?", kind: "warning", okLabel: "Reset everything", cancelLabel: "Cancel" },
+      { title: "Reset Osvell?", kind: "warning", okLabel: "Reset everything", cancelLabel: "Cancel" },
     );
     if (!ok) return;
     try {
-      await resetStudioData();
+      await resetAppData();
     } catch (err) {
       log("error", "reset failed", err);
-      onStatus("Could not reset Studio data");
+      onStatus("Could not reset Osvell data");
     }
   }
 
@@ -434,7 +434,7 @@ export function SettingsView({
                   <span className="hint">Last refresh: {formatRssSyncAt(lastRssSyncAt)}</span>
                   {syncDetailsOpen ? (
                     <p className="hint settings-sync-details">
-                      Studio refreshes your public Letterboxd diary RSS about once an hour while the app is
+                      Osvell refreshes your public Letterboxd diary RSS about once an hour while the app is
                       open, and when you launch it. Import a fresh Letterboxd export ZIP whenever you want to
                       add ratings and reviews that were not diary logs. Same official feeds RSS readers use —
                       no site scraping.
@@ -512,7 +512,7 @@ export function SettingsView({
         <section className="settings-group">
             <header className="settings-panel-intro">
               <h2>Appearance</h2>
-              <p className="hint">Choose the theme and accent Studio uses on this PC.</p>
+              <p className="hint">Choose the theme and accent Osvell uses on this PC.</p>
             </header>
             <div className="settings-pref-list settings-appearance-options">
               <div className="settings-pref-row">
@@ -553,7 +553,7 @@ export function SettingsView({
                         onClick={() => onAccent(a)}
                       >
                         <span className={`accent-radio-dot is-${a}`} aria-hidden="true" />
-                        <span>{a === "app" ? "Studio blue" : "System"}</span>
+                        <span>{a === "app" ? "Osvell blue" : "System"}</span>
                       </button>
                     ))}
                   </div>
@@ -727,7 +727,7 @@ export function SettingsView({
             <h3>Updates</h3>
           </div>
           <div className="settings-pref-control">
-          <p className="hint">Keep Studio current with the latest fixes and improvements.</p>
+          <p className="hint">Keep Osvell current with the latest fixes and improvements.</p>
           <p className="settings-system-version">Version {version}</p>
           <div className="update-line">
             <button type="button" className="ghost-pill" onClick={() => void checkUpdates()}>
@@ -743,7 +743,7 @@ export function SettingsView({
           {import.meta.env.DEV ? (
             <p className="hint">
               Dev builds cannot install updates. Use the installer from{" "}
-              <a href="https://github.com/rjreny/studio/releases" target="_blank" rel="noreferrer">
+              <a href="https://github.com/rjreny/osvell/releases" target="_blank" rel="noreferrer">
                 GitHub Releases
               </a>
               .

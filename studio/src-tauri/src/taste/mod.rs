@@ -472,7 +472,7 @@ pub fn clear_api_key() -> Result<(), String> {
 fn probe_key(key: &str) -> Result<TasteKeyStatus, String> {
     let req = ureq::get(OPENROUTER_KEY)
         .set("Authorization", &format!("Bearer {key}"))
-        .set("User-Agent", "Studio/0.7 (local film app)")
+        .set("User-Agent", "Osvell/0.7 (local film app)")
         .timeout(Duration::from_secs(12));
     match req.call() {
         Ok(_) => Ok(TasteKeyStatus {
@@ -694,7 +694,7 @@ pub fn film_taste_detail(db: &Database, id: &str) -> Result<FilmTasteFit, String
     }
     if detail.genres.is_empty() && detail.crew.is_empty() && detail.cast.is_empty() {
         return Ok(FilmTasteFit::unavailable(
-            "This film needs TMDB details before Studio can compare it to your taste.",
+            "This film needs TMDB details before Osvell can compare it to your taste.",
             watched,
         ));
     }
@@ -704,7 +704,7 @@ pub fn film_taste_detail(db: &Database, id: &str) -> Result<FilmTasteFit, String
     crate::taste::feedback::apply_feedback_adjustments(&mut profile, &adjustments);
     if profile.affinities.is_empty() {
         return Ok(FilmTasteFit::unavailable(
-            "Studio does not have enough rated metadata to explain this fit yet.",
+            "Osvell does not have enough rated metadata to explain this fit yet.",
             watched,
         ));
     }
@@ -767,7 +767,7 @@ pub fn film_taste_detail(db: &Database, id: &str) -> Result<FilmTasteFit, String
         evidence_titles: scored.evidence.into_iter().take(6).collect(),
         watched,
         unavailable_reason: (!available).then_some(
-            "Studio found too little direct evidence to make this a useful Taste fit.".into(),
+            "Osvell found too little direct evidence to make this a useful Taste fit.".into(),
         ),
     })
 }
@@ -1626,9 +1626,9 @@ fn send_chat(
         .post(OPENROUTER_CHAT)
         .set("Authorization", &format!("Bearer {key}"))
         .set("Content-Type", "application/json")
-        .set("HTTP-Referer", "https://github.com/rjreny/studio")
-        .set("X-Title", "Studio Taste")
-        .set("User-Agent", "Studio/0.7 (local film app)")
+        .set("HTTP-Referer", "https://github.com/rjreny/osvell")
+        .set("X-Title", "Osvell Taste")
+        .set("User-Agent", "Osvell/0.7 (local film app)")
         .send_string(&body.to_string())
     {
         Ok(resp) => resp.into_string().map_err(|e| e.to_string())?,

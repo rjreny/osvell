@@ -2558,6 +2558,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "osvell"
+version = "0.14.1"
+dependencies = [
+ "chrono",
+ "hex",
+ "keyring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-store",
+ "tauri-plugin-updater",
+ "tauri-plugin-window-state",
+ "ureq",
+ "uuid",
+ "windows-sys 0.59.0",
+ "zip 2.4.2",
+]
+
+[[package]]
 name = "pango"
 version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3594,32 +3620,6 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
-
-[[package]]
-name = "studio"
-version = "0.14.0"
-dependencies = [
- "chrono",
- "hex",
- "keyring",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-single-instance",
- "tauri-plugin-store",
- "tauri-plugin-updater",
- "tauri-plugin-window-state",
- "ureq",
- "uuid",
- "windows-sys 0.59.0",
- "zip 2.4.2",
-]
 
 [[package]]
 name = "subtle"

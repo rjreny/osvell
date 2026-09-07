@@ -96,7 +96,7 @@ export function FriendsView({
       <header className="page-head">
         <div>
           <h1>Friends</h1>
-          <p className="muted">Public Letterboxd diaries — Studio refreshes these feeds on its own</p>
+          <p className="muted">Public Letterboxd diaries — Osvell refreshes these feeds on its own</p>
         </div>
         <button type="button" className="play-btn" disabled={busy} onClick={() => void refreshAll()}>
           Sync all

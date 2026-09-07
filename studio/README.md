@@ -1,8 +1,8 @@
-# Studio
+# Osvell
 
-Developer guide for Studio. Looking to use the app? Start with the [product README](../README.md) or [download the latest Windows release](https://github.com/rjreny/studio/releases/latest).
+Developer guide for Osvell. Looking to use the app? Start with the [product README](../README.md) or [download the latest Windows release](https://github.com/rjreny/osvell/releases/latest).
 
-The product lives in this directory. The `../prototypes/` shells are historical experiments. Studio uses Tauri 2; features talk to `src/platform` only and must not import `@tauri-apps/*` directly. The lint configuration enforces that boundary.
+The product lives in this directory. The `../prototypes/` shells are historical experiments. Osvell uses Tauri 2; features talk to `src/platform` only and must not import `@tauri-apps/*` directly. The lint configuration enforces that boundary.
 
 Install Node.js/npm and the Windows Tauri build prerequisites (Rust, Microsoft C++ Build Tools, and WebView2), then run these commands from this directory:
 
@@ -20,4 +20,6 @@ NSIS is per-user. After any change that should reach the installed app, bump the
 
 Release CI needs the `TAURI_SIGNING_PRIVATE_KEY` repository secret. Keep the signing key out of source control. The updater feed must be publicly reachable; pushes to `master` warm the Rust build cache, while `v*` tags publish the installer and updater manifest. Documentation-only changes do not require a version bump or installer release.
 
-Repository: [rjreny/studio](https://github.com/rjreny/studio).
+Repository: [rjreny/osvell](https://github.com/rjreny/osvell).
+
+Osvell was previously named Studio. See [rename compatibility](../docs/osvell-rename.md) before changing application identifiers, storage names or the packaged executable filename.
