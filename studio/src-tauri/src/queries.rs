@@ -39,7 +39,7 @@ pub fn get_library(db: &Database, query: &LibraryQuery) -> Result<LibraryPage, S
         "title" => "title_raw ASC",
         "rating" => "(current_rating IS NULL), current_rating DESC, title_raw ASC",
         "year" => "(year IS NULL), year DESC, title_raw ASC",
-        _ => "(last_watched_at IS NULL), last_watched_at DESC, title_raw ASC",
+        _ => "(last_watched_at IS NULL), last_watched_at DESC, p.last_watched_sequence DESC, title_raw ASC, p.film_key ASC",
     };
 
     let search_clause = if search.is_empty() {
@@ -78,7 +78,15 @@ pub fn get_library(db: &Database, query: &LibraryQuery) -> Result<LibraryPage, S
                AND COALESCE(vp.counted, 1) = 1) AS source_viewing_count,
             COALESCE(ml.match_state, 'unmatched') AS match_state,
             smr.source_type,
-            ums.last_watched_at
+            ums.last_watched_at,
+            (SELECT COALESCE(event_timestamp(v.published_at), event_timestamp(v.observed_at))
+             FROM viewings v
+             LEFT JOIN viewing_projections vp ON vp.viewing_id = v.id
+             WHERE v.source_movie_record_id = smr.id
+               AND COALESCE(vp.counted, 1) = 1
+               AND v.occurred_at IS ums.last_watched_at
+             ORDER BY COALESCE(event_timestamp(v.published_at), event_timestamp(v.observed_at)) DESC
+             LIMIT 1) AS last_watched_sequence
           FROM source_movie_records smr
           LEFT JOIN movie_links ml ON ml.source_movie_record_id = smr.id
           LEFT JOIN movies m ON m.id = ml.movie_id
@@ -112,7 +120,7 @@ pub fn get_library(db: &Database, query: &LibraryQuery) -> Result<LibraryPage, S
             ) AS resolved_poster,
             ROW_NUMBER() OVER (
               PARTITION BY fe.film_key
-              ORDER BY fe.last_watched_at DESC, fe.source_id
+              ORDER BY fe.last_watched_at DESC, fe.last_watched_sequence DESC, fe.source_id
             ) AS rn
           FROM film_entries fe
         )
@@ -626,7 +634,8 @@ fn viewing_history(db: &Database, source_ids: &[String]) -> Result<Vec<ViewingHi
          LEFT JOIN viewing_projections vp ON vp.viewing_id = v.id
          WHERE v.source_movie_record_id IN ({marks})
            AND COALESCE(vp.counted, 1) = 1
-         ORDER BY COALESCE(occurred_at, observed_at) DESC"
+         ORDER BY COALESCE(occurred_at, observed_at) DESC,
+                  COALESCE(event_timestamp(published_at), event_timestamp(observed_at)) DESC, v.id"
     );
     let mut stmt = db.conn().prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
@@ -1218,6 +1227,44 @@ mod tests {
             .genres
             .iter()
             .all(|genre| genre.average_rating == Some(4.5)));
+    }
+
+    #[test]
+    fn recent_library_uses_publication_time_within_watched_day_before_pagination() {
+        use crate::letterboxd::import::upsert_source_movie;
+        use crate::letterboxd::posters::SourceMovieMeta;
+
+        let mut db = Database::in_memory().unwrap();
+        let tx = db.transaction().unwrap();
+        // Deliberately insert out of order, with a shared observation time.
+        // The two Grinch entries cross a UTC date boundary in their RSS timezone.
+        for (title, day, published) in [
+            ("Halloween is Grinch Night", "2026-09-06", Some("Mon, 7 Sep 2026 16:35:03 +1200")),
+            ("Mayday", "2026-09-06", Some("Sun, 6 Sep 2026 19:15:15 -0700")),
+            ("Onslaught", "2026-09-06", None),
+            ("The Grinch Grinches the Cat in the Hat", "2026-09-06", Some("2026-09-07T05:01:06Z")),
+            ("Speed Racer", "2026-09-06", Some("Mon, 7 Sep 2026 13:00:24 +1200")),
+            ("Earlier watched, later logged", "2026-09-05", Some("Tue, 8 Sep 2026 12:00:00 +1200")),
+        ] {
+            let id = upsert_source_movie(&tx, "letterboxd_rss", title, title, Some(2026), "", &SourceMovieMeta::default()).unwrap();
+            tx.execute(
+                "INSERT INTO viewings (id, source_movie_record_id, source_record_key, occurred_at, published_at, observed_at, source_type, rewatch)
+                 VALUES (?1, ?2, ?1, ?3, ?4, '2026-09-07T00:43:35Z', 'letterboxd_rss', 0)",
+                params![title, id, day, published],
+            ).unwrap();
+        }
+        Database::rebuild_projections(&tx).unwrap();
+        tx.commit().unwrap();
+        let mut query = LibraryQuery { search: None, sort: Some("recent".into()), filter: None, limit: Some(100), offset: Some(0) };
+        let page = get_library(&db, &query).unwrap();
+        let titles: Vec<_> = page.items.iter().map(|item| item.title.as_str()).collect();
+        assert_eq!(titles, vec!["The Grinch Grinches the Cat in the Hat", "Halloween is Grinch Night", "Mayday", "Speed Racer", "Onslaught", "Earlier watched, later logged"]);
+        query.limit = Some(2);
+        query.offset = Some(1);
+        let page = get_library(&db, &query).unwrap();
+        assert_eq!(page.items[0].title, "Halloween is Grinch Night");
+        assert_eq!(page.items[1].title, "Mayday");
+        assert_eq!(page.total, 6);
     }
 
     #[test]

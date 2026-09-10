@@ -780,25 +780,36 @@ pub fn film_taste_detail(db: &Database, id: &str) -> Result<FilmTasteFit, String
 }
 
 pub fn load_state(db: &Database) -> Result<TasteState, String> {
-    let mut films = load_films(db)?;
-    attach_signals(&mut films);
-    let mut profile = feature_profile_from_films(&films);
-    let feedback_adjustments = crate::taste::feedback::active_feedback_adjustments(db)?;
-    crate::taste::feedback::apply_feedback_adjustments(&mut profile, &feedback_adjustments);
+    let (report, report_stale) = load_saved_report(db)?;
+    let snapshot = load_display_snapshot(db, report.is_some())?;
     let feedback = crate::taste::feedback::list_feedback(db).unwrap_or_default();
     let hide = crate::taste::feedback::hide_ids(&feedback);
-    let (report, report_stale) = load_saved_report(db)?;
     let report = report
         .map(|r| filter_report_with_mood(r.normalize(), &hide, db))
         .transpose()?;
     Ok(TasteState {
         key: stored_status(db)?,
-        snapshot: snapshot_of(&films, Some(&profile)),
+        snapshot,
         report,
         report_stale,
         feedback,
         observation: crate::taste::feedback::observation_summary(db).unwrap_or_default(),
     })
+}
+
+fn load_display_snapshot(db: &Database, has_saved_report: bool) -> Result<TasteSnapshot, String> {
+    let mut films = load_films(db)?;
+    // Saved reports already contain the displayed affinities and dimensions.
+    // Only the first-run screen needs derived snapshot suggestions; reopening
+    // a saved board needs current counts, not another full profile calculation.
+    if has_saved_report {
+        return Ok(snapshot_of(&films, None));
+    }
+    attach_signals(&mut films);
+    let mut profile = feature_profile_from_films(&films);
+    let adjustments = crate::taste::feedback::active_feedback_adjustments(db)?;
+    crate::taste::feedback::apply_feedback_adjustments(&mut profile, &adjustments);
+    Ok(snapshot_of(&films, Some(&profile)))
 }
 
 /// Load the last Taste board even when the algorithm version has moved on.
@@ -2183,6 +2194,18 @@ mod tests {
         assert!(out.contains("DeepInfra"), "{out}");
         assert!(out.contains("upstream overloaded"), "{out}");
         assert!(should_fallback(&out));
+    }
+
+    #[test]
+    fn saved_display_does_not_require_profile_rebuilding() {
+        let db = Database::in_memory().unwrap();
+        // Profile rebuilding reads adjustment events. A saved display must
+        // remain independent of that work, including for older saved reports.
+        db.conn().execute_batch("DROP TABLE taste_feedback_events").unwrap();
+        let snapshot = load_display_snapshot(&db, true).unwrap();
+        assert_eq!(snapshot.rated_count, 0);
+        assert!(snapshot.genres.is_empty());
+        assert!(load_display_snapshot(&db, false).is_err());
     }
 
     #[test]

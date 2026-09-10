@@ -9,6 +9,24 @@ const FILM_KEY: &str =
     "COALESCE(ml.movie_id, smr.normalized_title || ':' || IFNULL(CAST(smr.release_year AS TEXT), ''))";
 
 fn apply_connection_pragmas(conn: &Connection) -> Result<(), String> {
+    // RSS uses RFC 2822 while local timestamps use RFC 3339. SQLite cannot
+    // parse RSS dates itself, and sorting their raw text is not chronological.
+    conn.create_scalar_function(
+        "event_timestamp",
+        1,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let value = ctx.get::<Option<String>>(0)?;
+            Ok(value.and_then(|value| {
+                chrono::DateTime::parse_from_rfc3339(value.trim())
+                    .or_else(|_| chrono::DateTime::parse_from_rfc2822(value.trim()))
+                    .ok()
+                    .map(|date| date.timestamp_millis())
+            }))
+        },
+    )
+    .map_err(|e| e.to_string())?;
     conn.busy_timeout(Duration::from_millis(5000))
         .map_err(|e| e.to_string())?;
     conn.execute_batch(
