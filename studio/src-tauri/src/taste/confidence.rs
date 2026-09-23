@@ -478,25 +478,45 @@ pub fn sort_workspace(rows: &mut [ScoredCandidate]) {
     rows.sort_by(rank_order);
 }
 
-/// Internal ranking for `taste-v1-quality-first-final`:
-/// known G > missing G → higher G (strict `total_cmp`) → Content Fit / confidence /
-/// candidate_fit / seeds / stable tmdb id.
-///
-/// Do **not** branch on `|ΔG| ≤ ε` here. Pairwise epsilon ties are not a total order
-/// (A≈B, B≈C, A≉C) and panic Rust's sort. Soft reordering inside ε groups happens
-/// afterward in `diversify_within_quality_ties`.
+/// Fit values inside one bucket may use TMDB quality as a tie-break.
+/// Buckets are fixed (not pairwise `|Δ|`) so the order stays transitive.
+pub const FIT_TIE_QUANTUM: f32 = 0.02;
+
+fn personal_fit_value(c: &ScoredCandidate) -> f32 {
+    let fit = c.eligibility.predicted_fit;
+    if fit.is_finite() {
+        fit
+    } else {
+        f32::NEG_INFINITY
+    }
+}
+
+fn fit_bucket(fit: f32) -> i32 {
+    if !fit.is_finite() {
+        return i32::MIN;
+    }
+    (fit / FIT_TIE_QUANTUM).round() as i32
+}
+
+/// Board order: personal fit first. TMDB quality breaks ties only inside a
+/// 0.02 fit bucket. A famous classic does not outrank a clearly better match.
 pub fn rank_order(a: &ScoredCandidate, b: &ScoredCandidate) -> std::cmp::Ordering {
     use crate::taste::quality::quality_rank_key;
 
-    let (ka, ga) = quality_rank_key(a.has_quality_prior, a.quality_prior);
-    let (kb, gb) = quality_rank_key(b.has_quality_prior, b.quality_prior);
-    kb.cmp(&ka).then_with(|| {
-        if ka == 0 && kb == 0 {
-            return content_then_confidence(a, b);
-        }
-        // Strict G first; content only when G compares Equal (incl. NaN bit-ties).
-        gb.total_cmp(&ga).then_with(|| content_then_confidence(a, b))
-    })
+    let fa = personal_fit_value(a);
+    let fb = personal_fit_value(b);
+    fit_bucket(fb).cmp(&fit_bucket(fa)).then_with(|| {
+        let (ka, ga) = quality_rank_key(a.has_quality_prior, a.quality_prior);
+        let (kb, gb) = quality_rank_key(b.has_quality_prior, b.quality_prior);
+        kb.cmp(&ka).then_with(|| {
+            if ka == 1 && kb == 1 {
+                gb.total_cmp(&ga)
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+    }).then_with(|| fb.total_cmp(&fa))
+        .then_with(|| content_then_confidence(a, b))
 }
 
 fn content_then_confidence(a: &ScoredCandidate, b: &ScoredCandidate) -> std::cmp::Ordering {
@@ -683,28 +703,53 @@ mod tests {
         c
     }
 
-    #[test]
-    fn known_negative_g_outranks_missing_g_regardless_of_content() {
-        let known = with_g(with_total(row_with(vec![], false, false, 0.2, 1), 0.2), Some(-0.05));
-        let missing = with_g(with_total(row_with(vec![], false, false, 0.95, 2), 0.95), None);
-        assert_eq!(rank_order(&known, &missing), std::cmp::Ordering::Less);
+    fn with_fit(mut c: ScoredCandidate, fit: f32) -> ScoredCandidate {
+        c.eligibility.predicted_fit = fit;
+        c
     }
 
     #[test]
-    fn strict_g_outranks_content_even_within_epsilon() {
-        let lower_g_higher_fit =
-            with_g(with_total(row_with(vec![], false, false, 0.9, 1), 0.9), Some(0.10));
-        let higher_g_lower_fit =
-            with_g(with_total(row_with(vec![], false, false, 0.4, 2), 0.4), Some(0.20));
+    fn higher_personal_fit_outranks_higher_tmdb_quality() {
+        let better_fit = with_fit(
+            with_g(with_total(row_with(vec![], false, false, 0.9, 1), 0.9), Some(0.05)),
+            0.82,
+        );
+        let famous = with_fit(
+            with_g(with_total(row_with(vec![], false, false, 0.2, 2), 0.2), Some(0.80)),
+            0.55,
+        );
+        assert_eq!(rank_order(&better_fit, &famous), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn quality_breaks_only_a_very_close_fit_tie() {
+        let lower_g = with_fit(
+            with_g(with_total(row_with(vec![], false, false, 0.5, 1), 0.5), Some(0.10)),
+            0.700,
+        );
+        let higher_g = with_fit(
+            with_g(with_total(row_with(vec![], false, false, 0.5, 2), 0.5), Some(0.20)),
+            0.708,
+        );
         assert_eq!(
-            rank_order(&higher_g_lower_fit, &lower_g_higher_fit),
-            std::cmp::Ordering::Less
+            rank_order(&higher_g, &lower_g),
+            std::cmp::Ordering::Less,
+            "inside one fit bucket the higher TMDB prior wins"
         );
 
-        // |ΔG|=0.02 ≤ ε — comparator still uses G; diversify may soft-reorder later.
-        let a = with_g(with_total(row_with(vec![], false, false, 0.9, 3), 0.9), Some(0.10));
-        let b = with_g(with_total(row_with(vec![], false, false, 0.4, 4), 0.4), Some(0.12));
-        assert_eq!(rank_order(&b, &a), std::cmp::Ordering::Less);
+        let clearly_better = with_fit(
+            with_g(with_total(row_with(vec![], false, false, 0.9, 3), 0.9), Some(0.02)),
+            0.78,
+        );
+        let close_famous = with_fit(
+            with_g(with_total(row_with(vec![], false, false, 0.4, 4), 0.4), Some(0.40)),
+            0.70,
+        );
+        assert_eq!(
+            rank_order(&clearly_better, &close_famous),
+            std::cmp::Ordering::Less,
+            "a fit gap past the tie bucket must beat fame"
+        );
     }
 
     #[test]
@@ -721,11 +766,20 @@ mod tests {
 
     #[test]
     fn rank_order_survives_epsilon_chain_that_broke_near_tie() {
-        // A≈B and B≈C within ε, but |A−C| > ε. Pairwise near-tie branching
-        // produced a cycle and panicked sort; strict G must stay transitive.
-        let a = with_g(with_total(row_with(vec![], false, false, 0.9, 1), 0.9), Some(0.00));
-        let b = with_g(with_total(row_with(vec![], false, false, 0.5, 2), 0.5), Some(0.03));
-        let c = with_g(with_total(row_with(vec![], false, false, 0.1, 3), 0.1), Some(0.06));
+        // Equal personal fit: quality tie-break must stay a total order
+        // (no pairwise |ΔG| cycle).
+        let a = with_fit(
+            with_g(with_total(row_with(vec![], false, false, 0.9, 1), 0.9), Some(0.00)),
+            0.64,
+        );
+        let b = with_fit(
+            with_g(with_total(row_with(vec![], false, false, 0.5, 2), 0.5), Some(0.03)),
+            0.64,
+        );
+        let c = with_fit(
+            with_g(with_total(row_with(vec![], false, false, 0.1, 3), 0.1), Some(0.06)),
+            0.64,
+        );
         let mut rows = vec![a, b, c];
         rows.sort_by(rank_order);
         assert_eq!(

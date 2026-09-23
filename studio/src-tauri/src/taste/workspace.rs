@@ -14,8 +14,8 @@ pub const WATCHLIST_MAX: usize = 30;
 #[allow(dead_code)]
 pub const EXPLORATION_MAX: usize = 0;
 pub const NEW_FILMOGRAPHY_PER_PERSON: usize = 6;
-/// Frozen v1: quality-first ordering + Content Fit C1/Match; unified board.
-pub const ALGORITHM_VERSION: &str = "taste-v1-quality-first-final";
+/// Personal-fit order. TMDB quality is a close-fit tie-break only.
+pub const ALGORITHM_VERSION: &str = "taste-v1-fit-first";
 /// v2 experiment stamp (research closed — not for production cutover).
 pub const ALGORITHM_VERSION_V2: &str = "taste-v2-bounded-experiment";
 
@@ -75,7 +75,7 @@ pub fn assemble_unified(ranked: &[ScoredCandidate]) -> Workspace {
     cap_new_filmography(&mut new_picks, NEW_FILMOGRAPHY_PER_PERSON);
     new_picks.retain(|c| confidence::occupies_new(c));
     refill_new_without_resume(&mut new_picks, &board_pool, NEW_FILMOGRAPHY_PER_PERSON);
-    // Preserve quality-first order after filmography caps (re-sort).
+    // Preserve personal-fit order after filmography caps (re-sort).
     new_picks.sort_by(confidence::rank_order);
     new_picks.truncate(NEW_MAX);
 
@@ -92,7 +92,7 @@ fn shortlist_new_pool(pool: &[ScoredCandidate], target: usize) -> Vec<ScoredCand
         return Vec::new();
     }
     let target = target.min(pool.len());
-    // C1: Recommended first, then Exploratory — quality-first order within each band.
+    // C1: Recommended first, then Exploratory — personal-fit order within each band.
     let mut recommended: Vec<_> = pool
         .iter()
         .filter(|c| c.eligibility.state == "recommended")
@@ -448,33 +448,35 @@ mod tests {
     }
 
     #[test]
-    fn displayed_new_order_is_quality_first_then_content_fit() {
-        let mut lower_g = row(1, false, 8, 0.99);
-        lower_g.has_quality_prior = true;
-        lower_g.quality_prior = 0.05;
-        lower_g.eligibility.predicted_fit = 0.90;
-        let mut higher_g = row(2, false, 8, 0.01);
-        higher_g.has_quality_prior = true;
-        higher_g.quality_prior = 0.20;
-        higher_g.eligibility.predicted_fit = 0.50;
-        let ws = assemble(&[lower_g, higher_g]);
+    fn displayed_new_order_is_personal_fit_then_quality_tiebreak() {
+        let mut better_fit = row(1, false, 8, 0.99);
+        better_fit.has_quality_prior = true;
+        better_fit.quality_prior = 0.05;
+        better_fit.eligibility.predicted_fit = 0.90;
+        let mut famous = row(2, false, 8, 0.01);
+        famous.has_quality_prior = true;
+        famous.quality_prior = 0.80;
+        famous.eligibility.predicted_fit = 0.50;
+        let ws = assemble(&[better_fit, famous]);
         assert_eq!(
             ws.new_picks[0].candidate.tmdb_id,
-            Some(2),
-            "known G must dominate Content Fit outside the ε window"
+            Some(1),
+            "a clearly better personal fit must outrank a high TMDB prior"
         );
 
         let mut near_low = row(3, false, 8, 0.40);
         near_low.has_quality_prior = true;
         near_low.quality_prior = 0.10;
-        let mut near_high = row(4, false, 8, 0.85);
+        near_low.eligibility.predicted_fit = 0.70;
+        let mut near_high = row(4, false, 8, 0.40);
         near_high.has_quality_prior = true;
         near_high.quality_prior = 0.12;
+        near_high.eligibility.predicted_fit = 0.704;
         let ws2 = assemble(&[near_low, near_high]);
         assert_eq!(
             ws2.new_picks[0].candidate.tmdb_id,
             Some(4),
-            "within |ΔG|≤ε Content Fit may break the tie"
+            "inside one fit bucket the higher TMDB prior breaks the tie"
         );
     }
 

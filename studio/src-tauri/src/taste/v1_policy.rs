@@ -1,39 +1,35 @@
-//! V1 production freeze — locked recommendation policy.
+//! Production recommendation policy.
 //!
-//! `taste-v1-quality-first-final`:
-//! - Broad retrieval + hard filters + C1 Content Fit admission
-//! - Known shrunk quality prior G orders the board (missing G below known G)
-//! - Content Fit may break ties only when `|ΔG| ≤ 0.04`
-//! - Light diversity only inside those fixed G groups (no transitive widening)
-//! - Match % remains Content Fit; `score.total` remains Content Fit
-//! - B4 Quality Fit λ contribution remains OFF
-//! - Watchlist is state only; no v2 / CF / MF / AI in production
+//! `taste-v1-fit-first`:
+//! - Semantic retrieval is era-balanced, not vote-count truncated at 2,000
+//! - Personal fit (content + shrunk people + era) orders the board
+//! - TMDB quality is a tie-break inside a 0.02 fit bucket only
+//! - Quality does not enter the fit number
+//! - Critique and narration still use the model; they do not choose the list
 
 use crate::taste::exam_policy::V1_ACTIVE_SEMANTIC_CAP;
-use crate::taste::family_fit::{CraftConfig, FamilyFitConfig};
+use crate::taste::family_fit::FamilyFitConfig;
 use crate::taste::hybrid_exam::HYBRID_BROAD_INDEX_CAP;
-use crate::taste::quality::QUALITY_TIE_EPSILON;
 use crate::taste::workspace::NEW_MAX;
 
 /// Human-readable freeze id (also mirrored in ALGORITHM_VERSION).
-pub const V1_POLICY_ID: &str = "taste-v1-quality-first-final";
+pub const V1_POLICY_ID: &str = "taste-v1-fit-first";
 
-/// Assert the production wiring matches the frozen v1 contract.
+/// Assert the production wiring matches the current contract.
 pub fn assert_v1_production_policy() {
-    assert_eq!(V1_ACTIVE_SEMANTIC_CAP, 2_000);
+    assert_eq!(V1_ACTIVE_SEMANTIC_CAP, 8_000);
     assert_eq!(HYBRID_BROAD_INDEX_CAP, 10_000);
     assert_eq!(NEW_MAX, 50);
-    assert!((QUALITY_TIE_EPSILON - 0.04).abs() < 1e-9);
 
-    let craft = CraftConfig::fit_v1();
+    let families = FamilyFitConfig::personal();
     assert!(
-        (craft.lambda - 0.0).abs() < 1e-9,
-        "Fit_v1 Content path keeps Craft λ=0"
+        families.craft.lambda > 0.05 && families.craft.lambda < 0.5,
+        "people kernel is on and bounded"
     );
-    let families = FamilyFitConfig::fit_v1();
-    assert!((families.craft.lambda - 0.0).abs() < 1e-9);
-    assert!((families.form.lambda - 0.0).abs() < 1e-9);
-    assert!(!families.quality.any_enabled(), "B4 Quality Fit contribution stays OFF");
+    assert!(families.form.era, "era kernel is on");
+    assert!(!families.form.runtime && !families.form.language);
+    assert!(families.form.lambda > 0.0);
+    assert!(!families.quality.any_enabled(), "TMDB quality stays out of fit");
 }
 
 #[cfg(test)]

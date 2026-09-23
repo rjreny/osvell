@@ -749,7 +749,20 @@ pub fn film_taste_detail(db: &Database, id: &str) -> Result<FilmTasteFit, String
         tmdb_related: 0.0,
         media_kind: MediaKind::Movie,
     };
-    let scored = crate::taste::score::score_candidate(&profile, &candidate);
+    let form_prior = crate::taste::form::build_form_prior(&films);
+    let semantic_map =
+        crate::taste::semantic::score_candidates_from_cache(db, &films, std::slice::from_ref(&candidate));
+    let semantic = candidate
+        .tmdb_id
+        .and_then(|id| semantic_map.get(&id))
+        .cloned()
+        .unwrap_or_default();
+    let scored = crate::taste::score::score_candidate_personal(
+        &profile,
+        &candidate,
+        &semantic,
+        Some(&form_prior),
+    );
     let evidence_grade = format!("{:?}", scored.eligibility.evidence_grade).to_ascii_lowercase();
     let match_score = crate::taste::confidence::match_score(&scored);
     let available = scored.eligibility.evidence_grade.displayable();
@@ -986,6 +999,7 @@ pub fn analyze_with_run_log(
         )),
         ..Default::default()
     });
+    let form_prior = crate::taste::form::build_form_prior(&films);
     let quality_catalog = crate::taste::quality::load_quality_catalog(db).ok();
     progress(JobProgress {
         job: "taste".into(),
@@ -998,11 +1012,12 @@ pub fn analyze_with_run_log(
         )),
         ..Default::default()
     });
-    let mut pool = crate::taste::score::score_pool_with_semantic(
+    let mut pool = crate::taste::score::score_pool_with_personal(
         &profile,
         &candidates,
         &semantic_scores,
         quality_catalog.as_ref(),
+        Some(&form_prior),
     );
     progress(JobProgress {
         job: "taste".into(),

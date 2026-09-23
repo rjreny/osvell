@@ -13,9 +13,9 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crate::taste::retrieve::GeneratorFamily;
 
-/// Vote-count-ranked active search size while 10k embeddings stay stored.
-/// E1.1 matrix: 10k active @1000 still lags 2k control; prefer this over forcing breadth.
-pub const V1_ACTIVE_SEMANTIC_CAP: usize = 2_000;
+/// Active search size. The index is filled by decade, not by vote count,
+/// so a recent film is not dropped to make room for an older, more-voted one.
+pub const V1_ACTIVE_SEMANTIC_CAP: usize = 8_000;
 
 /// 0 = use [`V1_ACTIVE_SEMANTIC_CAP`]. Benches set an explicit override via
 /// [`crate::taste::semantic::with_semantic_index_cap`].
