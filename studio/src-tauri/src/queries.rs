@@ -1,10 +1,12 @@
 use crate::catalog::tmdb::library_item_from_tmdb_value;
+use crate::letterboxd::normalize::normalize_title;
 use crate::letterboxd::posters::{backdrop_url, poster_from_rss_body, poster_url, tmdb_image_url};
 use crate::letterboxd::rss::parse_activity_payload;
 use crate::models::{
     ConnectionFilm, FilmCastMember, FilmConnection, FilmCrewMember, FilmDetail, FilmTrailer,
-    FriendActivityItem, HomeViewModel, LibraryItem, LibraryPage, LibraryQuery,
-    ProductionCompany, StatsBucket, StatsSnapshot, ViewingHistoryItem,
+    FriendActivityItem, HomeViewModel, LibraryItem, LibraryPage, LibraryQuery, PersonStat,
+    ProductionCompany, SeasonalReturn, SeriesPart, SeriesProgress, StatsBucket, StatsSnapshot,
+    ViewingHistoryItem,
 };
 use crate::storage::db::Database;
 use chrono::{Datelike, Utc};
@@ -311,7 +313,137 @@ pub fn get_stats(db: &Database) -> Result<StatsSnapshot, String> {
         total_runtime_minutes,
         runtime_viewings,
         metadata_movies,
+        people: people_stats(db)?,
     })
+}
+
+fn people_stats(db: &Database) -> Result<Vec<PersonStat>, String> {
+    let mut stmt = db
+        .conn()
+        .prepare(
+            r#"
+            WITH watched_movies AS (
+              SELECT DISTINCT m.id AS movie_id, ums.current_rating AS current_rating, m.credits_json AS credits_json
+              FROM viewings v
+              LEFT JOIN viewing_projections vp ON vp.viewing_id = v.id
+              JOIN source_movie_records smr ON smr.id = v.source_movie_record_id
+              JOIN movie_links ml ON ml.source_movie_record_id = smr.id
+              JOIN movies m ON m.id = ml.movie_id
+              LEFT JOIN user_movie_state ums ON ums.source_movie_record_id = smr.id
+              WHERE COALESCE(vp.counted, 1) = 1
+                AND m.credits_json IS NOT NULL
+            )
+            SELECT movie_id, credits_json, current_rating FROM watched_movies
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<f64>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut acc: HashMap<String, PersonAcc> = HashMap::new();
+    for (_movie_id, credits_json, rating) in rows.filter_map(Result::ok) {
+        let Ok(credits) = serde_json::from_str::<serde_json::Value>(&credits_json) else {
+            continue;
+        };
+        let mut seen_keys = std::collections::HashSet::new();
+        if let Some(crew) = credits.get("crew").and_then(|v| v.as_array()) {
+            for person in crew {
+                let Some(name) = person.get("name").and_then(|v| v.as_str()).map(str::trim) else {
+                    continue;
+                };
+                let Some(job) = person.get("job").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let Some(role) = person_role(job) else { continue };
+                if name.is_empty() || !seen_keys.insert(format!("{role}:{name}")) {
+                    continue;
+                }
+                add_person(&mut acc, name, role, rating);
+            }
+        }
+        if let Some(cast) = credits.get("cast").and_then(|v| v.as_array()) {
+            for person in cast.iter().take(8) {
+                let Some(name) = person.get("name").and_then(|v| v.as_str()).map(str::trim) else {
+                    continue;
+                };
+                if name.is_empty() || !seen_keys.insert(format!("cast:{name}")) {
+                    continue;
+                }
+                let order = person.get("order").and_then(|v| v.as_i64()).unwrap_or(0);
+                if order >= 8 {
+                    continue;
+                }
+                add_person(&mut acc, name, "cast", rating);
+            }
+        }
+    }
+
+    let mut people: Vec<PersonStat> = acc
+        .into_values()
+        .map(|person| PersonStat {
+            name: person.name,
+            role: person.role,
+            count: person.films,
+            average_rating: (person.rating_count > 0)
+                .then_some(person.rating_sum / f64::from(person.rating_count)),
+        })
+        .collect();
+    people.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then(b.average_rating.partial_cmp(&a.average_rating).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    let mut kept: HashMap<String, usize> = HashMap::new();
+    people.retain(|person| {
+        let n = kept.entry(person.role.clone()).or_insert(0);
+        if *n >= 10 {
+            return false;
+        }
+        *n += 1;
+        true
+    });
+    Ok(people)
+}
+
+fn person_role(job: &str) -> Option<&'static str> {
+    match job {
+        "Director" => Some("director"),
+        "Writer" | "Screenplay" | "Story" => Some("writer"),
+        "Director of Photography" => Some("cinematographer"),
+        _ => None,
+    }
+}
+
+struct PersonAcc {
+    name: String,
+    role: String,
+    films: u32,
+    rating_sum: f64,
+    rating_count: u32,
+}
+
+fn add_person(acc: &mut HashMap<String, PersonAcc>, name: &str, role: &str, rating: Option<f64>) {
+    let key = format!("{role}:{}", name.to_lowercase());
+    let entry = acc.entry(key).or_insert_with(|| PersonAcc {
+        name: name.to_string(),
+        role: role.to_string(),
+        films: 0,
+        rating_sum: 0.0,
+        rating_count: 0,
+    });
+    entry.films += 1;
+    if let Some(rating) = rating {
+        entry.rating_sum += rating;
+        entry.rating_count += 1;
+    }
 }
 
 fn recent_month_labels(month_count: usize) -> Vec<String> {
@@ -1050,6 +1182,7 @@ fn get_friend_activity_for_movie(
                 watched_at: row.get(4)?,
                 published_at: row.get(5)?,
                 poster: None,
+                film_id: None,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1082,6 +1215,8 @@ pub fn get_home(db: &Database) -> Result<HomeViewModel, String> {
         recent: page.items,
         top_rated: top.items,
         friend_feed: get_friend_feed(db, 30)?,
+        series: series_in_progress(db)?,
+        this_month: this_month_returns(db)?,
     })
 }
 
@@ -1090,7 +1225,7 @@ pub fn get_friend_feed(db: &Database, limit: u32) -> Result<Vec<FriendActivityIt
         .conn()
         .prepare(
             r#"
-            SELECT f.username, fa.raw_payload, fa.rating, fa.review, fa.watched_at, fa.published_at, fa.poster_url
+            SELECT f.username, fa.raw_payload, fa.rating, fa.review, fa.watched_at, fa.published_at, fa.poster_url, fa.source_movie_record_id
             FROM friend_activity fa
             JOIN friends f ON f.id = fa.friend_id
             ORDER BY COALESCE(fa.watched_at, fa.published_at) DESC
@@ -1098,10 +1233,12 @@ pub fn get_friend_feed(db: &Database, limit: u32) -> Result<Vec<FriendActivityIt
             "#,
         )
         .map_err(|e| e.to_string())?;
+    let library = library_films_by_title(db)?;
     let rows = stmt
         .query_map(params![limit], |row| {
             let raw: String = row.get(1)?;
             let stored_poster: Option<String> = row.get(6)?;
+            let source_id: Option<String> = row.get(7)?;
             let (title, year) = parse_activity_payload(&raw);
             Ok(FriendActivityItem {
                 username: row.get(0)?,
@@ -1112,10 +1249,275 @@ pub fn get_friend_feed(db: &Database, limit: u32) -> Result<Vec<FriendActivityIt
                 watched_at: row.get(4)?,
                 published_at: row.get(5)?,
                 poster: stored_poster.or_else(|| poster_from_rss_body(&raw)),
+                film_id: source_id,
             })
         })
         .map_err(|e| e.to_string())?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    let mut items: Vec<FriendActivityItem> = rows.filter_map(|r| r.ok()).collect();
+    for item in &mut items {
+        if let Some(id) = resolve_library_film(&library, &item.title, item.year) {
+            item.film_id = Some(id);
+        }
+    }
+    Ok(items)
+}
+
+struct LibraryFilmHit {
+    year: Option<i32>,
+    id: String,
+    in_library: bool,
+}
+
+fn library_films_by_title(db: &Database) -> Result<HashMap<String, Vec<LibraryFilmHit>>, String> {
+    let mut stmt = db
+        .conn()
+        .prepare(
+            "SELECT smr.normalized_title, COALESCE(m.release_year, smr.release_year), smr.id,
+                    CASE WHEN ums.source_movie_record_id IS NOT NULL THEN 1 ELSE 0 END
+             FROM source_movie_records smr
+             LEFT JOIN movie_links ml ON ml.source_movie_record_id = smr.id
+             LEFT JOIN movies m ON m.id = ml.movie_id
+             LEFT JOIN user_movie_state ums ON ums.source_movie_record_id = smr.id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i32>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i32>(3)? == 1,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut index: HashMap<String, Vec<LibraryFilmHit>> = HashMap::new();
+    for row in rows.filter_map(Result::ok) {
+        index.entry(row.0).or_default().push(LibraryFilmHit {
+            year: row.1,
+            id: row.2,
+            in_library: row.3,
+        });
+    }
+    Ok(index)
+}
+
+fn resolve_library_film(
+    index: &HashMap<String, Vec<LibraryFilmHit>>,
+    title: &str,
+    year: Option<i32>,
+) -> Option<String> {
+    let hits = index.get(&normalize_title(title))?;
+    let mut matches: Vec<&LibraryFilmHit> = hits
+        .iter()
+        .filter(|hit| match (year, hit.year) {
+            (Some(wanted), Some(got)) => wanted == got,
+            (None, _) => true,
+            (Some(_), None) => false,
+        })
+        .collect();
+    if matches.is_empty() {
+        return None;
+    }
+    matches.sort_by_key(|hit| if hit.in_library { 0 } else { 1 });
+    let best = matches[0];
+    if best.in_library || year.is_some() {
+        return Some(best.id.clone());
+    }
+    None
+}
+
+const SERIES_MAX_PARTS: usize = 16;
+
+fn series_in_progress(db: &Database) -> Result<Option<SeriesProgress>, String> {
+    let mut stmt = db
+        .conn()
+        .prepare(
+            "SELECT m.tmdb_id, smr.id, ums.current_rating,
+                    COALESCE(m.poster_override_url, m.poster_path, smr.cached_poster_url),
+                    ums.last_watched_at, m.collection_name, m.collection_json, COALESCE(ums.watched, 0)
+             FROM movies m
+             JOIN movie_links ml ON ml.movie_id = m.id
+             JOIN source_movie_records smr ON smr.id = ml.source_movie_record_id
+             LEFT JOIN user_movie_state ums ON ums.source_movie_record_id = smr.id
+             WHERE m.tmdb_id IS NOT NULL",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<f64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, i32>(7)? == 1,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    struct Seen {
+        id: String,
+        rating: Option<f64>,
+        poster: Option<String>,
+        last_watched_at: Option<String>,
+    }
+    let mut seen: HashMap<i64, Seen> = HashMap::new();
+    let mut openable: HashMap<i64, String> = HashMap::new();
+    struct CollectionSeed {
+        parts: Vec<LibraryItem>,
+        last_watched_at: Option<String>,
+    }
+    let mut collections: HashMap<String, CollectionSeed> = HashMap::new();
+
+    for (tmdb_id, film_id, rating, poster, last_watched_at, collection_name, collection_json, watched) in
+        rows.filter_map(Result::ok)
+    {
+        openable.insert(tmdb_id, film_id.clone());
+        if watched {
+            let entry = seen.entry(tmdb_id).or_insert_with(|| Seen {
+                id: film_id.clone(),
+                rating,
+                poster: poster_url(poster.clone()),
+                last_watched_at: last_watched_at.clone(),
+            });
+            if last_watched_at.as_deref() > entry.last_watched_at.as_deref() {
+                entry.id = film_id;
+                entry.rating = rating;
+                entry.poster = poster_url(poster);
+                entry.last_watched_at = last_watched_at.clone();
+            }
+            if let Some(name) = collection_name.filter(|name| !name.trim().is_empty()) {
+                let parts = parse_related(collection_json.as_deref());
+                let seed = collections.entry(name).or_insert_with(|| CollectionSeed {
+                    parts: Vec::new(),
+                    last_watched_at: None,
+                });
+                if parts.len() > seed.parts.len() {
+                    seed.parts = parts;
+                }
+                if last_watched_at.as_deref() > seed.last_watched_at.as_deref() {
+                    seed.last_watched_at = last_watched_at;
+                }
+            }
+        }
+    }
+
+    let now_year = Utc::now().year();
+    let mut best: Option<(String, SeriesProgress)> = None;
+    for (name, seed) in collections {
+        if seed.parts.len() < 2 || seed.parts.len() > SERIES_MAX_PARTS {
+            continue;
+        }
+        let mut indexed: Vec<(usize, LibraryItem)> = seed.parts.into_iter().enumerate().collect();
+        indexed.sort_by(|a, b| {
+            a.1.year
+                .unwrap_or(i32::MAX)
+                .cmp(&b.1.year.unwrap_or(i32::MAX))
+                .then(a.0.cmp(&b.0))
+        });
+        let mut parts = Vec::new();
+        let mut watched_count = 0u32;
+        let mut has_released_gap = false;
+        for (_, item) in indexed {
+            let tmdb_id = parse_tmdb_ref(&item.id);
+            let seen_film = tmdb_id.and_then(|id| seen.get(&id));
+            let watched = seen_film.is_some();
+            if watched {
+                watched_count += 1;
+            } else if item.year.unwrap_or(now_year) <= now_year {
+                has_released_gap = true;
+            }
+            let open_id = seen_film
+                .map(|film| film.id.clone())
+                .or_else(|| tmdb_id.and_then(|id| openable.get(&id).cloned()));
+            parts.push(SeriesPart {
+                id: open_id.clone().unwrap_or(item.id),
+                title: item.title,
+                year: item.year,
+                poster: seen_film
+                    .and_then(|film| film.poster.clone())
+                    .or(item.poster),
+                watched,
+                current_rating: seen_film.and_then(|film| film.rating),
+                openable: open_id.is_some(),
+            });
+        }
+        if watched_count == 0 || watched_count as usize == parts.len() || !has_released_gap {
+            continue;
+        }
+        let progress = SeriesProgress {
+            name: series_label(&name),
+            watched: watched_count,
+            total: parts.len() as u32,
+            parts,
+        };
+        let recency = seed.last_watched_at.unwrap_or_default();
+        let replace = match &best {
+            None => true,
+            Some((prev, _)) => recency > *prev,
+        };
+        if replace {
+            best = Some((recency, progress));
+        }
+    }
+    Ok(best.map(|(_, progress)| progress))
+}
+
+fn series_label(name: &str) -> String {
+    let trimmed = name.trim();
+    for suffix in [" Collection", " Series", " Franchise"] {
+        if let Some(rest) = trimmed.strip_suffix(suffix) {
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                return rest.to_string();
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+fn this_month_returns(db: &Database) -> Result<Vec<SeasonalReturn>, String> {
+    let month = format!("{:02}", Utc::now().month());
+    let mut stmt = db
+        .conn()
+        .prepare(
+            r#"
+            SELECT smr.id,
+                   COALESCE(m.canonical_title, json_extract(smr.raw_identity, '$.title'), smr.normalized_title),
+                   COALESCE(m.release_year, smr.release_year),
+                   COALESCE(m.poster_override_url, m.poster_path, smr.cached_poster_url),
+                   MAX(ums.current_rating),
+                   COUNT(DISTINCT strftime('%Y', COALESCE(v.occurred_at, v.observed_at)))
+            FROM viewings v
+            LEFT JOIN viewing_projections vp ON vp.viewing_id = v.id
+            JOIN source_movie_records smr ON smr.id = v.source_movie_record_id
+            LEFT JOIN movie_links ml ON ml.source_movie_record_id = smr.id
+            LEFT JOIN movies m ON m.id = ml.movie_id
+            LEFT JOIN user_movie_state ums ON ums.source_movie_record_id = smr.id
+            WHERE COALESCE(vp.counted, 1) = 1
+              AND strftime('%m', COALESCE(v.occurred_at, v.observed_at)) = ?1
+            GROUP BY smr.id
+            HAVING COUNT(DISTINCT strftime('%Y', COALESCE(v.occurred_at, v.observed_at))) >= 2
+            ORDER BY 6 DESC, 5 DESC
+            LIMIT 12
+            "#,
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![month], |row| {
+            Ok(SeasonalReturn {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                year: row.get(2)?,
+                poster: poster_url(row.get(3)?),
+                current_rating: row.get(4)?,
+                years: row.get::<_, i64>(5)? as u32,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(|row| row.ok()).collect())
 }
 
 #[cfg(test)]
@@ -1584,5 +1986,176 @@ mod tests {
         assert_eq!(page.items[0].title, "Unwatched Watchlist Film");
         assert!(page.items[0].watchlist);
         assert!(!page.items[0].watched);
+    }
+
+    #[test]
+    fn home_puts_an_in_progress_series_in_release_order() {
+        use rusqlite::params;
+
+        let db = Database::in_memory().expect("db");
+        let parts = vec![
+            LibraryItem::catalog("tmdb:3".into(), "Third".into(), Some(2006), None, None, None),
+            LibraryItem::catalog("tmdb:1".into(), "First".into(), Some(2000), None, None, None),
+            LibraryItem::catalog("tmdb:9".into(), "Later".into(), Some(2099), None, None, None),
+            LibraryItem::catalog("tmdb:2".into(), "Second".into(), Some(2003), None, None, None),
+        ];
+        let collection = serde_json::to_string(&parts).expect("collection");
+        db.conn()
+            .execute(
+                "INSERT INTO movies (id, canonical_title, release_year, tmdb_id, collection_name, collection_json)
+                 VALUES ('movie-1', 'First', 2000, 1, 'Example Collection', ?1)",
+                params![collection],
+            )
+            .expect("movie");
+        db.conn()
+            .execute(
+                "INSERT INTO source_movie_records (id, source_type, source_record_key, normalized_title, release_year, raw_identity, created_at)
+                 VALUES ('source-1', 'letterboxd_export', 'film|first', 'first', 2000, '{}', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("source");
+        db.conn()
+            .execute(
+                "INSERT INTO movie_links (source_movie_record_id, movie_id, match_state) VALUES ('source-1', 'movie-1', 'confirmed')",
+                [],
+            )
+            .expect("link");
+        db.conn()
+            .execute(
+                "INSERT INTO user_movie_state (source_movie_record_id, movie_id, watched, current_rating, last_watched_at, projection_updated_at)
+                 VALUES ('source-1', 'movie-1', 1, 4.5, '2026-09-01', '2026-09-01T00:00:00Z')",
+                [],
+            )
+            .expect("state");
+
+        let home = get_home(&db).expect("home");
+        let series = home.series.expect("series");
+        assert_eq!(series.name, "Example");
+        assert_eq!(series.watched, 1);
+        assert_eq!(series.total, 4);
+        assert_eq!(
+            series.parts.iter().map(|part| part.title.as_str()).collect::<Vec<_>>(),
+            vec!["First", "Second", "Third", "Later"]
+        );
+        assert!(series.parts[0].watched);
+        assert!(!series.parts[1].watched);
+        assert!(series.parts[0].openable);
+        assert!(!series.parts[1].openable);
+    }
+
+    #[test]
+    fn this_month_returns_a_film_watched_in_that_month_across_years() {
+        use rusqlite::params;
+
+        let db = Database::in_memory().expect("db");
+        db.conn()
+            .execute(
+                "INSERT INTO source_movie_records (id, source_type, source_record_key, normalized_title, raw_identity, created_at)
+                 VALUES ('source-coral', 'letterboxd_export', 'film|coraline', 'coraline', '{\"title\":\"Coraline\"}', '2020-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("source");
+        let month = Utc::now().format("%m").to_string();
+        for (id, year) in [("v1", Utc::now().year() - 2), ("v2", Utc::now().year() - 1)] {
+            let occurred = format!("{year}-{month}-15");
+            db.conn()
+                .execute(
+                    "INSERT INTO viewings (id, source_movie_record_id, source_record_key, occurred_at, observed_at, source_type, rewatch)
+                     VALUES (?1, 'source-coral', ?2, ?3, ?3, 'letterboxd_export', 0)",
+                    params![id, format!("view|{id}"), occurred],
+                )
+                .expect("viewing");
+        }
+        let home = get_home(&db).expect("home");
+        assert_eq!(home.this_month.len(), 1);
+        assert_eq!(home.this_month[0].title, "Coraline");
+        assert_eq!(home.this_month[0].years, 2);
+    }
+
+    #[test]
+    fn friend_activity_opens_the_matching_library_film() {
+        use rusqlite::params;
+
+        let db = Database::in_memory().expect("db");
+        db.conn()
+            .execute(
+                "INSERT INTO friends (id, username) VALUES ('friend-1', 'ada')",
+                [],
+            )
+            .expect("friend");
+        db.conn()
+            .execute(
+                "INSERT INTO source_movie_records (id, source_type, source_record_key, normalized_title, release_year, raw_identity, created_at)
+                 VALUES ('source-heat', 'letterboxd_export', 'film|heat', 'heat', 1995, '{}', '2020-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("source");
+        db.conn()
+            .execute(
+                "INSERT INTO user_movie_state (source_movie_record_id, watched, projection_updated_at)
+                 VALUES ('source-heat', 1, '2020-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("state");
+        db.conn()
+            .execute(
+                "INSERT INTO friend_activity (id, friend_id, source_record_key, activity_type, raw_payload)
+                 VALUES ('act-1', 'friend-1', 'rss|1', 'diary', ?1)",
+                params![r#"{"title":"Heat","year":1995}"#],
+            )
+            .expect("activity");
+
+        let feed = get_friend_feed(&db, 10).expect("feed");
+        assert_eq!(feed[0].film_id.as_deref(), Some("source-heat"));
+    }
+
+    #[test]
+    fn stats_people_count_directors_and_lead_cast() {
+        use rusqlite::params;
+
+        let db = Database::in_memory().expect("db");
+        let credits = r#"{"cast":[{"name":"Ada Actor","order":0},{"name":"Extra","order":20}],"crew":[{"name":"Dee Director","job":"Director"},{"name":"Dee Director","job":"Writer"}]}"#;
+        db.conn()
+            .execute(
+                "INSERT INTO movies (id, canonical_title, credits_json) VALUES ('movie-1', 'Example', ?1)",
+                params![credits],
+            )
+            .expect("movie");
+        db.conn()
+            .execute(
+                "INSERT INTO source_movie_records (id, source_type, source_record_key, normalized_title, raw_identity, created_at)
+                 VALUES ('source-1', 'letterboxd_export', 'film|example', 'example', '{}', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("source");
+        db.conn()
+            .execute(
+                "INSERT INTO movie_links (source_movie_record_id, movie_id, match_state) VALUES ('source-1', 'movie-1', 'confirmed')",
+                [],
+            )
+            .expect("link");
+        db.conn()
+            .execute(
+                "INSERT INTO user_movie_state (source_movie_record_id, movie_id, watched, current_rating, projection_updated_at)
+                 VALUES ('source-1', 'movie-1', 1, 5, '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .expect("state");
+        db.conn()
+            .execute(
+                "INSERT INTO viewings (id, source_movie_record_id, source_record_key, occurred_at, observed_at, source_type, rewatch)
+                 VALUES ('view-1', 'source-1', 'view|1', '2026-01-02', '2026-01-02', 'letterboxd_export', 0)",
+                [],
+            )
+            .expect("viewing");
+
+        let stats = get_stats(&db).expect("stats");
+        let director = stats.people.iter().find(|person| person.role == "director").expect("director");
+        assert_eq!(director.name, "Dee Director");
+        assert_eq!(director.count, 1);
+        assert_eq!(director.average_rating, Some(5.0));
+        assert!(stats.people.iter().any(|person| person.role == "writer" && person.name == "Dee Director"));
+        assert!(stats.people.iter().any(|person| person.role == "cast" && person.name == "Ada Actor"));
+        assert!(!stats.people.iter().any(|person| person.name == "Extra"));
     }
 }

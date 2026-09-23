@@ -188,26 +188,6 @@ pub fn sync_friend_rss(
             .unwrap_or_else(|| row_fingerprint(&[("link", &item.link), ("title", &item.title)]));
         let event_fp = row_fingerprint(&[("guid", &guid), ("feed", &feed_url)]);
         let activity_key = source_record_key("letterboxd_rss", &feed_url, &event_fp);
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT id FROM friend_activity WHERE source_record_key = ?1",
-                params![activity_key],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-        if let Some(id) = existing {
-            tx.execute(
-                "UPDATE friend_activity
-                 SET rating = ?2, review = COALESCE(?3, review), raw_payload = ?4,
-                     poster_url = COALESCE(?5, poster_url)
-                 WHERE id = ?1",
-                params![id, item.rating, item.review, item.raw, item.poster],
-            )
-            .map_err(|e| e.to_string())?;
-            continue;
-        }
-
         let movie_fp = row_fingerprint(&[
             ("name", &item.film_title),
             (
@@ -222,7 +202,7 @@ pub fn sync_friend_rss(
             tmdb_id: item.tmdb_id,
             ..Default::default()
         };
-        let _smr = upsert_source_movie(
+        let smr = upsert_source_movie(
             &tx,
             "letterboxd_rss",
             &movie_key,
@@ -231,14 +211,36 @@ pub fn sync_friend_rss(
             &item.link,
             &meta,
         )?;
+        let existing: Option<String> = tx
+            .query_row(
+                "SELECT id FROM friend_activity WHERE source_record_key = ?1",
+                params![activity_key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(id) = existing {
+            tx.execute(
+                "UPDATE friend_activity
+                 SET rating = ?2, review = COALESCE(?3, review), raw_payload = ?4,
+                     poster_url = COALESCE(?5, poster_url),
+                     source_movie_record_id = COALESCE(source_movie_record_id, ?6)
+                 WHERE id = ?1",
+                params![id, item.rating, item.review, item.raw, item.poster, smr],
+            )
+            .map_err(|e| e.to_string())?;
+            continue;
+        }
+
         tx.execute(
             "INSERT INTO friend_activity(
               id, friend_id, source_movie_record_id, source_record_key, activity_type,
               published_at, watched_at, rating, review, source_guid, raw_payload, poster_url
-            ) VALUES (?1, ?2, NULL, ?3, 'diary', ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            ) VALUES (?1, ?2, ?3, ?4, 'diary', ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 Uuid::new_v4().to_string(),
                 friend_id,
+                smr,
                 activity_key,
                 item.published,
                 item.watched_date,

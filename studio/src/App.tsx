@@ -371,7 +371,11 @@ export default function App() {
                   />
                 ) : null}
                 {route === "friends" ? (
-                  <FriendsView onStatus={setStatus} onRefresh={refresh} />
+                  <FriendsView
+                    onStatus={setStatus}
+                    onRefresh={refresh}
+                    onSelectFilm={(id) => openFilm(id, "friends")}
+                  />
                 ) : null}
                 {route === "stats" ? <StatsView onSelectFilm={(id) => openFilm(id, "stats")} /> : null}
                 {route === "recs" ? (

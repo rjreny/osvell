@@ -5,6 +5,7 @@ import type { JobProgress, TasteFeedback, TasteModelInfo, TastePick, TasteState 
 import { log } from "../../platform/log";
 import { Menu } from "../ui/Menu";
 import { AnchoredPopover } from "../ui/AnchoredPopover";
+import { isReleasedYear } from "../../core/released";
 import { Poster } from "./Poster";
 
 const RUN_STEPS = [
@@ -34,15 +35,17 @@ function pickKey(pick: TastePick) {
 
 function sectionPicks(report: NonNullable<TasteState["report"]>) {
   // Unified board: prefer `picks`, fall back to merging legacy shelf arrays once.
+  // Saved reports can still contain unreleased years; keep those off the board.
+  const released = (picks: TastePick[]) => picks.filter((pick) => isReleasedYear(pick.year));
   if (Array.isArray(report.picks) && report.picks.length) {
-    return report.picks;
+    return released(report.picks);
   }
   if (Array.isArray(report.newPicks) || Array.isArray(report.watchlistPicks)) {
-    return [
+    return released([
       ...(report.newPicks ?? []),
       ...(report.explorePicks ?? []),
       ...(report.watchlistPicks ?? []),
-    ];
+    ]);
   }
   return [] as TastePick[];
 }

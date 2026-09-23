@@ -95,6 +95,13 @@ export type StatsBucket = {
   averageRating: number | null;
 };
 
+export type PersonStat = {
+  name: string;
+  role: "director" | "writer" | "cinematographer" | "cast" | string;
+  count: number;
+  averageRating: number | null;
+};
+
 export type StatsSnapshot = {
   viewingMonths: StatsBucket[];
   genres: StatsBucket[];
@@ -102,6 +109,7 @@ export type StatsSnapshot = {
   totalRuntimeMinutes: number;
   runtimeViewings: number;
   metadataMovies: number;
+  people?: PersonStat[];
 };
 
 export type ViewingHistoryItem = {
@@ -122,6 +130,33 @@ export type FriendActivityItem = {
   watchedAt: string | null;
   publishedAt: string | null;
   poster: string | null;
+  filmId?: string | null;
+};
+
+export type SeriesPart = {
+  id: string;
+  title: string;
+  year: number | null;
+  poster: string | null;
+  watched: boolean;
+  currentRating: number | null;
+  openable: boolean;
+};
+
+export type SeriesProgress = {
+  name: string;
+  watched: number;
+  total: number;
+  parts: SeriesPart[];
+};
+
+export type SeasonalReturn = {
+  id: string;
+  title: string;
+  year: number | null;
+  poster: string | null;
+  currentRating: number | null;
+  years: number;
 };
 
 export type FilmDetail = {
@@ -238,6 +273,8 @@ export type HomeViewModel = {
   recent: LibraryItem[];
   topRated: LibraryItem[];
   friendFeed: FriendActivityItem[];
+  series?: SeriesProgress | null;
+  thisMonth?: SeasonalReturn[];
 };
 
 export type ImportResult = {

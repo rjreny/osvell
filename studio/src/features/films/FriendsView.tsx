@@ -15,9 +15,11 @@ import { RatingDisplay } from "./RatingDisplay";
 export function FriendsView({
   onStatus,
   onRefresh,
+  onSelectFilm,
 }: {
   onStatus: (s: string) => void;
   onRefresh: () => Promise<void>;
+  onSelectFilm?: (id: string) => void;
 }) {
   const [friends, setFriends] = useState<FriendRow[]>([]);
   const [draft, setDraft] = useState("");
@@ -150,19 +152,37 @@ export function FriendsView({
         <section className="friends-feed">
           <h2>Latest ratings</h2>
           <ul className="activity-list">
-            {feed.map((e, idx) => (
-              <li key={`${e.username}-${e.title}-${idx}`}>
-                <Poster name={e.title} poster={e.poster} />
-                <div className="activity-copy">
-                  <strong title={e.title}>{e.title}</strong>
-                  <span className="muted">
-                    @{e.username}
-                    {e.year ? `  ${e.year}` : ""}
-                  </span>
-                </div>
-                <RatingDisplay value={e.rating} starsOnly />
-              </li>
-            ))}
+            {feed.map((e, idx) => {
+              const open = e.filmId && onSelectFilm ? () => onSelectFilm(e.filmId!) : null;
+              return (
+                <li key={`${e.username}-${e.title}-${idx}`}>
+                  {open ? (
+                    <button type="button" className="activity-open" onClick={open}>
+                      <Poster name={e.title} poster={e.poster} />
+                      <div className="activity-copy">
+                        <strong title={e.title}>{e.title}</strong>
+                        <span className="muted">
+                          @{e.username}
+                          {e.year ? `  ${e.year}` : ""}
+                        </span>
+                      </div>
+                    </button>
+                  ) : (
+                    <>
+                      <Poster name={e.title} poster={e.poster} />
+                      <div className="activity-copy">
+                        <strong title={e.title}>{e.title}</strong>
+                        <span className="muted">
+                          @{e.username}
+                          {e.year ? `  ${e.year}` : ""}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                  <RatingDisplay value={e.rating} starsOnly />
+                </li>
+              );
+            })}
           </ul>
           {!feed.length ? <p className="muted">Sync friends to fill this feed.</p> : null}
         </section>

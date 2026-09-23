@@ -89,6 +89,28 @@ describe("RecsView feedback", () => {
     tasteFeedbackSet.mockResolvedValue({});
   });
 
+  it("hides films that are not released yet", async () => {
+    tasteGet.mockResolvedValue(
+      state({
+        report: {
+          ...state().report!,
+          picks: [
+            pick("Released recommendation", 101),
+            { ...pick("Coming soon", 303), year: new Date().getFullYear() },
+            { ...pick("Next year", 404), year: new Date().getFullYear() + 1 },
+            { ...pick("Undated", 505), year: null },
+          ],
+        },
+      }),
+    );
+    render(<RecsView onSelectFilm={vi.fn()} onOpenSettings={vi.fn()} />);
+
+    expect(await screen.findByRole("button", { name: "Released recommendation" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Coming soon" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next year" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Undated" })).not.toBeInTheDocument();
+  });
+
   it("sends the selected Pass reason and target feature to Taste", async () => {
     render(<RecsView onSelectFilm={vi.fn()} onOpenSettings={vi.fn()} />);
 

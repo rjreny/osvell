@@ -228,6 +228,15 @@ pub struct StatsBucket {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PersonStat {
+    pub name: String,
+    pub role: String,
+    pub count: u32,
+    pub average_rating: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StatsSnapshot {
     pub viewing_months: Vec<StatsBucket>,
     pub genres: Vec<StatsBucket>,
@@ -235,6 +244,8 @@ pub struct StatsSnapshot {
     pub total_runtime_minutes: u32,
     pub runtime_viewings: u32,
     pub metadata_movies: u32,
+    #[serde(default)]
+    pub people: Vec<PersonStat>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -259,6 +270,42 @@ pub struct FriendActivityItem {
     pub watched_at: Option<String>,
     pub published_at: Option<String>,
     pub poster: Option<String>,
+    /// Library id when this activity can open a film page.
+    #[serde(default)]
+    pub film_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeriesPart {
+    pub id: String,
+    pub title: String,
+    pub year: Option<i32>,
+    pub poster: Option<String>,
+    pub watched: bool,
+    pub current_rating: Option<f64>,
+    /// True when the title can open a film page.
+    pub openable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeriesProgress {
+    pub name: String,
+    pub watched: u32,
+    pub total: u32,
+    pub parts: Vec<SeriesPart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeasonalReturn {
+    pub id: String,
+    pub title: String,
+    pub year: Option<i32>,
+    pub poster: Option<String>,
+    pub current_rating: Option<f64>,
+    pub years: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -380,6 +427,10 @@ pub struct HomeViewModel {
     pub recent: Vec<LibraryItem>,
     pub top_rated: Vec<LibraryItem>,
     pub friend_feed: Vec<FriendActivityItem>,
+    #[serde(default)]
+    pub series: Option<SeriesProgress>,
+    #[serde(default)]
+    pub this_month: Vec<SeasonalReturn>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -6,6 +6,7 @@ export function FilmCard({
   film,
   onSelect,
   caption,
+  showRating = true,
 }: {
   film: Pick<LibraryItem, "id" | "title" | "year" | "poster" | "currentRating"> & {
     viewingCount?: number;
@@ -13,6 +14,7 @@ export function FilmCard({
   };
   onSelect?: (id: string) => void;
   caption?: string;
+  showRating?: boolean;
 }) {
   const seen = film.viewingCount && film.viewingCount > 1 ? `${film.viewingCount}×` : "";
   const meta = [caption || (film.year != null ? String(film.year) : ""), seen].filter(Boolean).join(" · ");
@@ -26,7 +28,7 @@ export function FilmCard({
         {film.title}
       </strong>
       <span className="title-year">{meta || "\u00a0"}</span>
-      <RatingDisplay value={film.currentRating} starsOnly />
+      {showRating ? <RatingDisplay value={film.currentRating} starsOnly /> : null}
     </>
   );
 

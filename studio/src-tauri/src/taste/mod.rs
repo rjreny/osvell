@@ -1485,6 +1485,9 @@ fn to_taste_picks(
     let mut out = Vec::new();
     let mut traces = Vec::new();
     for scored in validated {
+        if !crate::taste::confidence::released_for_recommendation(scored.candidate.year) {
+            continue;
+        }
         let rp = reasoner_picks.iter().find(|p| {
             (!p.id.is_empty()
                 && scored.candidate.tmdb_id.map(|id| format!("tmdb:{id}")).as_deref() == Some(p.id.as_str()))

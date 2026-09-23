@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { communityRatingOutOfFive, isHighQualityBanner } from "../../core/images";
+import { watchPattern } from "../../core/watchPattern";
 import { log } from "../../platform/log";
 import { getFilm, getFilmArtwork, setFilmArtwork } from "../../platform/filmLibrary";
 import type {
@@ -132,12 +133,13 @@ function Production({ companies }: { companies: ProductionCompany[] }) {
   );
 }
 
-function LastRating({ viewing }: { viewing: ViewingHistoryItem }) {
+function LastRating({ viewing, pattern }: { viewing: ViewingHistoryItem; pattern: string | null }) {
   return (
     <aside className="detail-last-rating" aria-label="Your latest rating">
       <h2>Last rating</h2>
       <div className="detail-last-rating-value"><strong>{formatWatchDate(viewing.occurredAt ?? viewing.publishedAt)}</strong><RatingDisplay value={viewing.rating} compact /></div>
       <div className="detail-last-rating-source">{viewing.rewatch ? <span className="rewatch-badge">Rewatch</span> : null}<span className="muted">{sourceLabel(viewing.source)}</span></div>
+      {pattern ? <p className="detail-pattern">{pattern}</p> : null}
     </aside>
   );
 }
@@ -404,6 +406,7 @@ export function FilmDetailView({ filmId, onBack, backLabel, onStatus, onSelectFi
   const runtime = runtimeLabel(film.runtime);
   const community = communityRatingOutOfFive(film.tmdbVoteAverage);
   const latestViewing = film.yourHistory[0] ?? null;
+  const pattern = watchPattern(film.yourHistory.map((viewing) => viewing.occurredAt ?? viewing.publishedAt));
   const trailers = (film.trailers ?? []).filter((trailer) => trailer.site === "YouTube" && trailer.key);
 
   return (
@@ -443,7 +446,7 @@ export function FilmDetailView({ filmId, onBack, backLabel, onStatus, onSelectFi
         <div className="detail-layout">
           <div className="detail-overview-row">
             <section className="detail-block detail-about"><h2>About</h2>{film.overview ? <p className="detail-overview">{film.overview}</p> : <p className="muted">Not enriched yet.</p>}{film.genres.length ? <p className="genre-row">{film.genres.join(" · ")}</p> : null}</section>
-            {latestViewing ? <LastRating viewing={latestViewing} /> : null}
+            {latestViewing ? <LastRating viewing={latestViewing} pattern={pattern} /> : null}
           </div>
           {film.friends.length ? <section className="detail-block detail-friends"><h2>Friends</h2><ul className="friend-chips">{film.friends.map((friend, index) => <li key={`${friend.username}-${index}`}><strong>@{friend.username}</strong><RatingDisplay value={friend.rating} compact />{friend.review ? <span className="muted">{friend.review}</span> : null}</li>)}</ul></section> : null}
           <section className="detail-block detail-cast"><div className="detail-heading"><h2>Cast</h2><span className="muted">{film.cast.length} credited</span></div><CastDirectory cast={film.cast} /></section>

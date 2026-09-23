@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { isHighQualityBanner } from "../../core/images";
-import { getFilm } from "../../platform/filmLibrary";
-import type { FilmDetail, HomeViewModel, LibraryItem } from "../../platform/types/film";
+import { isReleasedYear } from "../../core/released";
+import { getFilm, tasteGet } from "../../platform/filmLibrary";
+import type { FilmDetail, HomeViewModel, LibraryItem, SeriesProgress, TastePick } from "../../platform/types/film";
 import { FilmCard } from "./FilmCard";
+import { Poster } from "./Poster";
 import { RatingDisplay } from "./RatingDisplay";
 import { Shelf } from "./Shelf";
 
@@ -44,6 +46,7 @@ export function HomeView({
   }, [home]);
   const [index, setIndex] = useState(0);
   const [detail, setDetail] = useState<FilmDetail | null>(null);
+  const [upNext, setUpNext] = useState<TastePick[]>([]);
   const featured = slides[index] ?? home?.topRated[0] ?? null;
 
   useEffect(() => {
@@ -67,6 +70,25 @@ export function HomeView({
       cancelled = true;
     };
   }, [featured?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void tasteGet()
+      .then((state) => {
+        if (cancelled) return;
+        const report = state.report;
+        const picks = report?.picks?.length
+          ? report.picks
+          : [...(report?.newPicks ?? []), ...(report?.watchlistPicks ?? [])];
+        setUpNext(picks.filter((pick) => isReleasedYear(pick.year)).slice(0, 8));
+      })
+      .catch(() => {
+        if (!cancelled) setUpNext([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [home]);
 
   useEffect(() => {
     if (slides.length < 2) return;
@@ -145,6 +167,44 @@ export function HomeView({
       )}
 
       <div className="home-shelves">
+        {home.series ? <SeriesBoard series={home.series} onSelectFilm={onSelectFilm} /> : null}
+
+        {upNext.length ? (
+          <Shelf title="Up next">
+            {upNext.map((pick) => {
+              const id = pick.filmId || (pick.tmdbId ? `tmdb:${pick.tmdbId}` : "");
+              if (!id) return null;
+              return (
+                <FilmCard
+                  key={id}
+                  film={{
+                    id,
+                    title: pick.title,
+                    year: pick.year,
+                    poster: pick.poster,
+                    currentRating: null,
+                  }}
+                  onSelect={onSelectFilm}
+                  showRating={false}
+                />
+              );
+            })}
+          </Shelf>
+        ) : null}
+
+        {home.thisMonth?.length ? (
+          <Shelf title="This time of year">
+            {home.thisMonth.map((film) => (
+              <FilmCard
+                key={film.id}
+                film={film}
+                caption={`${film.years} years`}
+                onSelect={onSelectFilm}
+              />
+            ))}
+          </Shelf>
+        ) : null}
+
         <Shelf
           title="Recent from your log"
           action={
@@ -188,17 +248,75 @@ export function HomeView({
               <FilmCard
                 key={`${entry.username}-${entry.title}-${idx}`}
                 film={{
-                  id: `${entry.username}-${idx}`,
+                  id: entry.filmId || `${entry.username}-${idx}`,
                   title: entry.title,
                   year: entry.year,
                   poster: entry.poster,
                   currentRating: entry.rating,
                 }}
                 caption={`@${entry.username}`}
+                onSelect={entry.filmId ? onSelectFilm : undefined}
               />
             ))}
         </Shelf>
       </div>
     </div>
+  );
+}
+
+function SeriesBoard({
+  series,
+  onSelectFilm,
+}: {
+  series: SeriesProgress;
+  onSelectFilm: (id: string) => void;
+}) {
+  const nowYear = new Date().getFullYear();
+  const nextId = series.parts.find(
+    (part) => !part.watched && (part.year == null || part.year <= nowYear),
+  )?.id;
+
+  return (
+    <section className="series-board" aria-label={`Finish ${series.name}`}>
+      <header className="shelf-head">
+        <h2>Finish {series.name}</h2>
+        <span className="muted">
+          {series.watched} of {series.total}
+        </span>
+      </header>
+      <ol className="series-list">
+        {series.parts.map((part, index) => {
+          const upcoming = part.year != null && part.year > nowYear;
+          const isNext = !part.watched && part.id === nextId;
+          const state = part.watched ? "Watched" : isNext ? "Next" : upcoming ? "Later" : "";
+          const body = (
+            <>
+              <span className="series-index">{index + 1}</span>
+              <Poster name={part.title} poster={part.poster} />
+              <span className="series-copy">
+                <strong>{part.title}</strong>
+                {part.year ? <small>{part.year}</small> : null}
+              </span>
+              <span className="series-state">{state}</span>
+            </>
+          );
+          return (
+            <li key={`${part.id}-${index}`}>
+              {part.openable ? (
+                <button
+                  type="button"
+                  className={`series-row${isNext ? " is-next" : ""}`}
+                  onClick={() => onSelectFilm(part.id)}
+                >
+                  {body}
+                </button>
+              ) : (
+                <div className={`series-row${isNext ? " is-next" : ""}`}>{body}</div>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 }

@@ -251,6 +251,14 @@ fn future_dated(c: &ScoredCandidate) -> bool {
     matches!(c.candidate.year, Some(y) if y > year_now)
 }
 
+/// Display gate for recommendations. Release dates are not stored, only a year,
+/// so a film dated this year or later is not treated as available to watch.
+/// Ranking still uses [`future_dated`], which only excludes a later calendar year
+/// and still lets watchlist rows through.
+pub fn released_for_recommendation(year: Option<i32>) -> bool {
+    matches!(year, Some(year) if year < chrono::Utc::now().year())
+}
+
 /// Future-dated or yearless stubs with no catalog proof stay off New and Explore.
 /// Watchlist titles like Avatar 4 may still be future-dated.
 pub fn unreleased_display_row(c: &ScoredCandidate) -> bool {

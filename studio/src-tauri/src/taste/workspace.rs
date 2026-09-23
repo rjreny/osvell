@@ -63,7 +63,10 @@ pub fn assemble_unified(ranked: &[ScoredCandidate]) -> Workspace {
     let pool: Vec<_> = ranked.iter().filter(|c| eligible(c)).cloned().collect();
     let board_pool: Vec<_> = pool
         .iter()
-        .filter(|c| confidence::occupies_new(c))
+        .filter(|c| {
+            confidence::occupies_new(c)
+                && confidence::released_for_recommendation(c.candidate.year)
+        })
         .cloned()
         .collect();
 
