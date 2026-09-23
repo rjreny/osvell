@@ -884,6 +884,8 @@ struct IndexRow {
     year: Option<i32>,
     poster: Option<String>,
     runtime: Option<i32>,
+    /// Kept on the row for diagnostics. Retrieval must not rank or cap by it.
+    #[allow(dead_code)]
     vote_count: i64,
     vector: Vec<f32>,
 }
@@ -897,12 +899,8 @@ fn load_semantic_index(db: &Database) -> Result<Vec<IndexRow>, String> {
     {
         let guard = index_cache().lock().map_err(|e| e.to_string())?;
         if let Some(cached) = guard.as_ref() {
-            let mut out = cached.clone();
             let cap = effective_semantic_index_cap();
-            if out.len() > cap {
-                out.truncate(cap);
-            }
-            return Ok(out);
+            return Ok(select_era_balanced(cached.clone(), cap));
         }
     }
 
@@ -910,12 +908,8 @@ fn load_semantic_index(db: &Database) -> Result<Vec<IndexRow>, String> {
     if let Ok(mut guard) = index_cache().lock() {
         *guard = Some(loaded.clone());
     }
-    let mut out = loaded;
     let cap = effective_semantic_index_cap();
-    if out.len() > cap {
-        out.truncate(cap);
-    }
-    Ok(out)
+    Ok(select_era_balanced(loaded, cap))
 }
 
 fn load_semantic_index_from_db(db: &Database) -> Result<Vec<IndexRow>, String> {
@@ -985,12 +979,48 @@ fn load_semantic_index_from_db(db: &Database) -> Result<Vec<IndexRow>, String> {
             vector,
         });
     }
-    out.sort_by(|a, b| {
-        b.vote_count
-            .cmp(&a.vote_count)
-            .then_with(|| a.tmdb_id.cmp(&b.tmdb_id))
-    });
+    out.sort_by(|a, b| a.tmdb_id.cmp(&b.tmdb_id));
     Ok(out)
+}
+
+fn decade_bucket(year: Option<i32>) -> i32 {
+    match year {
+        Some(y) if (1880..=2035).contains(&y) => (y / 10) * 10,
+        _ => -1,
+    }
+}
+
+/// Fill `cap` by round-robin across release decades. Within a decade the
+/// order is tmdb id, not vote count, so fame cannot crowd out a recent title.
+fn select_era_balanced(rows: Vec<IndexRow>, cap: usize) -> Vec<IndexRow> {
+    if cap == 0 || rows.len() <= cap {
+        return rows;
+    }
+    use std::collections::BTreeMap;
+    let mut buckets: BTreeMap<i32, Vec<IndexRow>> = BTreeMap::new();
+    for row in rows {
+        buckets.entry(decade_bucket(row.year)).or_default().push(row);
+    }
+    for bucket in buckets.values_mut() {
+        bucket.sort_by_key(|row| row.tmdb_id);
+        bucket.reverse();
+    }
+    let keys: Vec<i32> = buckets.keys().copied().collect();
+    let mut out = Vec::with_capacity(cap.min(keys.len().saturating_mul(1)));
+    let mut progressed = true;
+    while out.len() < cap && progressed {
+        progressed = false;
+        for key in &keys {
+            if out.len() >= cap {
+                break;
+            }
+            if let Some(row) = buckets.get_mut(key).and_then(|bucket| bucket.pop()) {
+                out.push(row);
+                progressed = true;
+            }
+        }
+    }
+    out
 }
 
 pub fn semantic_universe_stats(
@@ -1475,6 +1505,35 @@ mod tests {
     fn cosine_handles_dimension_mismatch() {
         assert_eq!(cosine(&[1.0, 0.0], &[1.0]), 0.0);
         assert!((cosine(&[1.0, 0.0], &[1.0, 0.0]) - 1.0).abs() < f32::EPSILON);
+    }
+
+    fn index_row(id: i64, year: i32, votes: i64) -> IndexRow {
+        IndexRow {
+            tmdb_id: id,
+            title: format!("t{id}"),
+            year: Some(year),
+            poster: None,
+            runtime: Some(100),
+            vote_count: votes,
+            vector: vec![1.0],
+        }
+    }
+
+    #[test]
+    fn era_balanced_cap_keeps_a_recent_film_over_extra_classics() {
+        let mut rows = Vec::new();
+        for i in 0..20 {
+            rows.push(index_row(i, 1975, 50_000 - i as i64));
+        }
+        rows.push(index_row(900, 2022, 12));
+        let kept = select_era_balanced(rows, 4);
+        assert!(
+            kept.iter().any(|row| row.tmdb_id == 900),
+            "a low-vote recent title must survive a cap that would have been all 1970s by votes"
+        );
+        assert!(kept.len() <= 4);
+        let seventies = kept.iter().filter(|row| row.year == Some(1975)).count();
+        assert!(seventies < 4, "one decade must not fill the whole cap");
     }
 
     #[test]

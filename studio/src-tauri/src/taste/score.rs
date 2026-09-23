@@ -7,9 +7,7 @@ use crate::taste::dimensions::predicted_modes;
 use crate::taste::explain::{
     eligibility_trace, select_display_reasons, EligibilityTrace, EvidenceGrade, MatchedFeatureView,
 };
-use crate::taste::family_fit::{
-    family_fit_as_legacy_total, score_family_fit_with_config, CraftConfig,
-};
+use crate::taste::family_fit::family_fit_as_legacy_total;
 use crate::taste::retrieve::{Candidate, RetrievalKind};
 use crate::taste::semantic::SemanticScore;
 use chrono::Datelike;
@@ -152,8 +150,18 @@ pub fn score_candidate_with_semantic(
     candidate: &Candidate,
     semantic: &SemanticScore,
 ) -> ScoredCandidate {
+    score_candidate_personal(profile, candidate, semantic, None)
+}
+
+/// Same scorer as the board, including era and people when a form prior is set.
+pub fn score_candidate_personal(
+    profile: &FeatureProfile,
+    candidate: &Candidate,
+    semantic: &SemanticScore,
+    form_prior: Option<&crate::taste::form::FormPrior>,
+) -> ScoredCandidate {
     let index = affinity_index(profile);
-    score_candidate_with_index(profile, &index, candidate, semantic)
+    score_candidate_with_index(profile, &index, candidate, semantic, form_prior)
 }
 
 fn affinity_index(profile: &FeatureProfile) -> std::collections::HashMap<String, usize> {
@@ -169,6 +177,7 @@ fn score_candidate_with_index(
     affinity_by_key: &std::collections::HashMap<String, usize>,
     candidate: &Candidate,
     semantic: &SemanticScore,
+    form_prior: Option<&crate::taste::form::FormPrior>,
 ) -> ScoredCandidate {
     let mut content_sum = 0.0;
     let mut content_w = 0.0;
@@ -431,31 +440,46 @@ fn score_candidate_with_index(
         quality_prior: 0.0,
         has_quality_prior: false,
     };
-    // Content Fit_v1 → score.total / Match / C1. Quality prior stamped separately for ordering.
-    apply_fit_v1_ranking(profile, candidate, semantic, &mut row);
+    // Personal fit (content + shrunk people + era) → score.total / Match / C1.
+    // Quality prior is stamped separately and only breaks a very close fit tie.
+    apply_fit_v1_ranking(profile, candidate, semantic, form_prior, &mut row);
     row
 }
 
-/// Replace ranking `total` with Content-only Fit_v1. Craft contribution is 0.
-/// Also stamps C1 eligibility (Recommended / Exploratory / Held) from Content
-/// fit + confidence + hydration — legacy EvidenceGrade stays for logs only.
+/// Stamp personal fit onto `total` and eligibility. With a form prior this
+/// includes shrunk people and era; without one it stays content-only.
+/// Legacy EvidenceGrade stays for logs only.
 fn apply_fit_v1_ranking(
     profile: &FeatureProfile,
     candidate: &Candidate,
     semantic: &SemanticScore,
+    form_prior: Option<&crate::taste::form::FormPrior>,
     row: &mut ScoredCandidate,
 ) {
     use crate::taste::eligibility::{
         classify_eligibility, content_score_to_predicted_fit, EligibilityInput,
     };
-    use crate::taste::family_fit::hydrate_candidate;
+    use crate::taste::family_fit::{
+        hydrate_candidate, score_family_fit_full, FamilyFitConfig, FitPriors,
+    };
 
-    let fit = score_family_fit_with_config(
-        profile,
-        candidate,
-        semantic,
-        &CraftConfig::fit_v1(),
-    );
+    // Era and people turn on only when the caller supplies history. Calibration
+    // paths that omit the prior stay on content-only Fit_v1.
+    let (config, priors) = if form_prior.is_some() {
+        (
+            FamilyFitConfig::personal(),
+            FitPriors {
+                form: form_prior,
+                ..FitPriors::default()
+            },
+        )
+    } else {
+        (
+            FamilyFitConfig::fit_v1(),
+            FitPriors::default(),
+        )
+    };
+    let fit = score_family_fit_full(profile, candidate, semantic, &config, priors);
     row.score.content = fit.families.content.score;
     row.score.total = family_fit_as_legacy_total(&fit);
     if semantic.coverage {
@@ -466,7 +490,9 @@ fn apply_fit_v1_ranking(
     }
 
     let features = hydrate_candidate(profile, candidate, semantic.coverage);
-    let predicted_fit = content_score_to_predicted_fit(fit.families.content.score);
+    // Combined personal fit, not content alone, so era and people move the
+    // displayed match and the board order together.
+    let predicted_fit = content_score_to_predicted_fit(fit.fit);
     let decision = classify_eligibility(&EligibilityInput {
         predicted_fit,
         confidence: fit.families.content.confidence,
@@ -1603,6 +1629,16 @@ pub fn score_pool_with_semantic(
     semantic_scores: &std::collections::HashMap<i64, SemanticScore>,
     quality_catalog: Option<&crate::taste::quality::QualityCatalog>,
 ) -> ScorePool {
+    score_pool_with_personal(profile, candidates, semantic_scores, quality_catalog, None)
+}
+
+pub fn score_pool_with_personal(
+    profile: &FeatureProfile,
+    candidates: &[Candidate],
+    semantic_scores: &std::collections::HashMap<i64, SemanticScore>,
+    quality_catalog: Option<&crate::taste::quality::QualityCatalog>,
+    form_prior: Option<&crate::taste::form::FormPrior>,
+) -> ScorePool {
     let affinity_by_key = affinity_index(profile);
     let mut dropped_filmography = Vec::new();
     let mut dropped_contextual = Vec::new();
@@ -1620,7 +1656,8 @@ pub fn score_pool_with_semantic(
             .and_then(|id| semantic_scores.get(&id))
             .cloned()
             .unwrap_or_default();
-        let mut row = score_candidate_with_index(profile, &affinity_by_key, c, &semantic);
+        let mut row =
+            score_candidate_with_index(profile, &affinity_by_key, c, &semantic, form_prior);
         stamp_quality_prior(&mut row, c, quality_catalog);
         // Watchlist competes in the same C1 band population as everything else.
         if crate::taste::confidence::unreleased_new_row(&row)

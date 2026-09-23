@@ -10,17 +10,20 @@ use serde::{Deserialize, Serialize};
 const PROVISIONAL_MIN: u8 = 52;
 const PROVISIONAL_MAX: u8 = 88;
 
-/// Frozen piecewise (fit_01 → match %). From live C1 holdout isotonic bins
-/// (support≈336). Higher raw fit never lowers Match.
+/// Piecewise map from personal fit to the percent on a card.
+/// Ordinary fits (around 0.50) stay in the 50s. A strong fit (around 0.66,
+/// where a real top match lands after content compression) clears 79.
+/// Higher raw fit never lowers Match.
 pub const MATCH_CURVE_V1: &[(f32, u8)] = &[
-    (0.00, 52),
-    (0.40, 58),
-    (0.475, 65),
-    (0.575, 67),
-    (0.625, 74),
-    (0.675, 91),
-    (0.75, 93),
-    (1.00, 95),
+    (0.00, 42),
+    (0.40, 50),
+    (0.48, 55),
+    (0.55, 62),
+    (0.62, 78),
+    (0.66, 86),
+    (0.72, 91),
+    (0.85, 94),
+    (1.00, 96),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +213,22 @@ fn enforce_curve_monotonic(curve: &mut [(f32, u8)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_fit_stays_in_the_fifties_and_a_top_match_clears_79() {
+        let ordinary = fit_to_match_percent(0.50);
+        assert!(
+            (50..=59).contains(&ordinary),
+            "ordinary fit should read in the 50s, got {ordinary}"
+        );
+        let top = fit_to_match_percent(0.66);
+        assert!(
+            top > 79,
+            "a strong personal fit must clear the old ~79 ceiling, got {top}"
+        );
+        assert!(top < 96, "a strong match is not an automatic 99, got {top}");
+        assert!(fit_to_match_percent(0.40) <= 50);
+    }
 
     #[test]
     fn match_curve_is_monotonic() {

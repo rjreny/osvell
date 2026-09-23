@@ -3,9 +3,9 @@
 //! `vote_count` only controls shrinkage confidence in `vote_average`.
 //! It must never become an independent popularity boost.
 //!
-//! Production (`taste-v1-quality-first-final`):
-//! - Ordering uses `quality_prior` when `has_quality_prior` is true.
-//! - Missing quality ranks below known quality (0.0 is a valid neutral prior).
+//! Production (`taste-v1-fit-first`):
+//! - Personal fit orders the board. `quality_prior` only breaks a very close fit tie.
+//! - Missing quality does not outrank a known prior inside that tie.
 //! - B4 Fit contribution (`fit_contribution` / QualityConfig λ into Fit) stays OFF.
 
 use crate::storage::db::Database;

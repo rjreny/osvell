@@ -28,6 +28,8 @@ use std::collections::HashMap;
 
 const CONTENT_WEIGHT: f32 = 0.58;
 const CRAFT_WEIGHT: f32 = 0.42;
+/// Additive people weight on the live personal-fit score.
+const PEOPLE_LAMBDA: f32 = 0.30;
 /// Small ranking nudge from confidence — never `fit * confidence`.
 const CONFIDENCE_RANK_NUDGE: f32 = 0.08;
 const CRAFT_SHRINK_K: f32 = 4.0;
@@ -191,6 +193,19 @@ impl CraftConfig {
             roles: CraftRoleMask::full(),
             actor_mode: ActorMode::Full,
             lambda: CRAFT_WEIGHT / CONTENT_WEIGHT,
+            lineage_diminishing: true,
+        }
+    }
+
+    /// Live people term. Existing shrinkage stays in `score_craft`. Lambda is
+    /// small so a loved director, writer, or actor can move a close match
+    /// without replacing content similarity. Actors still only corroborate
+    /// content that is already positive.
+    pub fn bounded_people() -> Self {
+        Self {
+            roles: CraftRoleMask::full(),
+            actor_mode: ActorMode::ContentCorroboration,
+            lambda: PEOPLE_LAMBDA,
             lineage_diminishing: true,
         }
     }
@@ -413,6 +428,18 @@ impl FamilyFitConfig {
             form: FormConfig::off(),
             continuity: ContinuityConfig::off(),
             quality,
+        }
+    }
+
+    /// Production score: content, a shrunk people term, and the era kernel.
+    /// Runtime and language stay off (language is not stored). Quality stays
+    /// out of the fit number; it is only a ranking tie-break.
+    pub fn personal() -> Self {
+        Self {
+            craft: CraftConfig::bounded_people(),
+            form: FormConfig::era_only(),
+            continuity: ContinuityConfig::off(),
+            quality: QualityConfig::off(),
         }
     }
 }
@@ -1694,6 +1721,87 @@ mod tests {
         assert!(
             (fit.ranking_score - product).abs() > 0.02,
             "ranking must not silently become fit*confidence"
+        );
+    }
+
+    #[test]
+    fn personal_fit_prefers_a_rated_era_and_a_known_director() {
+        use crate::taste::form::{FormFilm, FormPrior};
+
+        let semantic = SemanticScore {
+            positive_similarity: 0.62,
+            negative_similarity: 0.28,
+            fit: 0.7,
+            coverage: true,
+            positive_matches: 4,
+            negative_matches: 2,
+        };
+        let profile = profile_with(vec![]);
+        let mut liked = Vec::new();
+        for y in 2014..2024 {
+            liked.push(FormFilm {
+                runtime: Some(110),
+                year: Some(y),
+                language: None,
+                modes: vec!["story".into()],
+                genres: vec!["Drama".into()],
+                positive: true,
+                weight: 1.0,
+            });
+        }
+        for y in 1970..1978 {
+            liked.push(FormFilm {
+                runtime: Some(110),
+                year: Some(y),
+                language: None,
+                modes: vec!["story".into()],
+                genres: vec!["Drama".into()],
+                positive: false,
+                weight: 1.0,
+            });
+        }
+        let prior = FormPrior { films: liked };
+        let cfg = FamilyFitConfig::personal();
+        let priors = FitPriors {
+            form: Some(&prior),
+            ..FitPriors::default()
+        };
+        let mut recent = candidate_with(&["Drama"], &[], "Nobody");
+        recent.year = Some(2020);
+        recent.tmdb_id = Some(1);
+        let mut classic = candidate_with(&["Drama"], &[], "Nobody");
+        classic.year = Some(1974);
+        classic.tmdb_id = Some(2);
+        let recent_fit = score_family_fit_full(&profile, &recent, &semantic, &cfg, priors);
+        let classic_fit = score_family_fit_full(&profile, &classic, &semantic, &cfg, priors);
+        assert!(
+            recent_fit.families.form.score > classic_fit.families.form.score,
+            "era kernel should lift the decade the user rated highly ({} vs {})",
+            recent_fit.families.form.score,
+            classic_fit.families.form.score
+        );
+        assert!(
+            recent_fit.fit > classic_fit.fit,
+            "same story, preferred era should win ({} vs {})",
+            recent_fit.fit,
+            classic_fit.fit
+        );
+
+        let mut loved = aff(FeatureFamily::Director, "Villeneuve", 0.9, 6);
+        loved.positive_weight = 6.0;
+        let people = profile_with(vec![loved]);
+        let mut theirs = candidate_with(&["Drama"], &[], "Villeneuve");
+        theirs.year = Some(2020);
+        let mut other = candidate_with(&["Drama"], &[], "Unknown");
+        other.year = Some(2020);
+        other.tmdb_id = Some(9);
+        let theirs_fit = score_family_fit_full(&people, &theirs, &semantic, &cfg, priors);
+        let other_fit = score_family_fit_full(&people, &other, &semantic, &cfg, priors);
+        assert!(
+            theirs_fit.fit > other_fit.fit,
+            "a known director should raise personal fit ({} vs {})",
+            theirs_fit.fit,
+            other_fit.fit
         );
     }
 
