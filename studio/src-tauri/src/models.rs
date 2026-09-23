@@ -75,6 +75,9 @@ pub struct JobProgress {
     pub posters: u32,
     pub errors: u32,
     pub done: bool,
+    /// Background feed checks should not surface progress or empty results.
+    #[serde(default)]
+    pub quiet: bool,
     /// Optional secondary status line (candidate counts, model name, etc.).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,

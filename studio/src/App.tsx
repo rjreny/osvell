@@ -29,6 +29,12 @@ import type { AppSession, HomeViewModel, JobProgress, LibraryCoverage } from "./
 import { log } from "./platform/log";
 import { getSetting, setSetting } from "./platform/settings";
 import { checkAppUpdate, downloadAndInstallUpdate, type UpdateProgress } from "./platform/updater";
+import { windowApi } from "./platform/window";
+import {
+  quietFeedNotice,
+  quietFeedShouldRefresh,
+  quietFeedUpdate,
+} from "./platform/activity";
 import { UpdateOverlay } from "./app/shell/UpdateOverlay";
 import "./styles.css";
 import "./materials.css";
@@ -114,8 +120,7 @@ export default function App() {
     launchHydrationStarted.current = true;
     void (async () => {
       try {
-        const [r, t, a, u, migrated, lib, v] = await Promise.all([
-          getSetting<Route>("route"),
+        const [t, a, u, migrated, lib, v] = await Promise.all([
           getSetting<Theme>("theme"),
           getSetting<Accent>("accent"),
           getSetting<string>("username"),
@@ -123,7 +128,6 @@ export default function App() {
           getSetting<Library>("library"),
           appVersion().catch(() => "dev"),
         ]);
-        if (r && NAV.some((n) => n.id === r)) setRoute(r);
         if (t) setTheme(t);
         if (a) setAccent(a);
         setVersion(v);
@@ -182,12 +186,23 @@ export default function App() {
 
   useEffect(() => {
     if (!hydrated) return;
-    void setSetting("route", route);
     void setSetting("theme", theme);
     void setSetting("accent", accent);
     void setSetting("username", username);
     void setSelfUsername(username).catch((err) => log("warn", "username persist failed", err));
-  }, [route, theme, accent, username, hydrated]);
+  }, [theme, accent, username, hydrated]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen("osvell-open-home", () => {
+      setSelectedFilm(null);
+      setRoute("home");
+      void refresh();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => unlisten?.();
+  }, [refresh]);
 
   useEffect(() => {
     if (!hydrated || import.meta.env.DEV || updateCheckStarted.current) return;
@@ -204,14 +219,20 @@ export default function App() {
     let unlisten: (() => void) | undefined;
     void listen<JobProgress>("studio-job", (event) => {
       const next = event.payload;
-      setJob(next.done ? null : next);
-      if (next.done && (next.job !== "enrich" || (next.enrich && shouldNotifyEnrichCompletion(next.enrich)))) {
-        setStatus(next.label);
+      const quiet = quietFeedUpdate(next);
+      if (!quiet) {
+        setJob(next.done ? null : next);
+        if (next.done && (next.job !== "enrich" || (next.enrich && shouldNotifyEnrichCompletion(next.enrich)))) {
+          setStatus(next.label);
+        }
+      } else {
+        const notice = quietFeedNotice(next);
+        if (notice) setStatus(notice);
       }
       if (next.done) {
         if (next.job === "taste") {
           invalidateTasteCache();
-        } else {
+        } else if (!quiet || quietFeedShouldRefresh(next)) {
           void refresh();
         }
       }
@@ -292,6 +313,10 @@ export default function App() {
       if (meta && e.key === ",") {
         e.preventDefault();
         setRoute("settings");
+      }
+      if (meta && e.key.toLowerCase() === "q") {
+        e.preventDefault();
+        void windowApi().quit();
       }
     }
     window.addEventListener("keydown", onKey);

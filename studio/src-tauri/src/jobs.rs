@@ -26,6 +26,7 @@ pub fn spawn_job<F>(
     slot: JobSlot,
     db_path: PathBuf,
     name: &'static str,
+    quiet: bool,
     work: F,
 ) -> Result<(), String>
 where
@@ -44,6 +45,7 @@ where
         JobProgress {
             job: name.into(),
             label: format!("Starting {name}…"),
+            quiet,
             ..Default::default()
         },
     );
@@ -68,6 +70,7 @@ where
                             label: format!("{name} failed · {}", toast_err(&err)),
                             errors: 1,
                             done: true,
+                            quiet,
                             ..Default::default()
                         },
                     );
@@ -85,6 +88,7 @@ where
                             label: format!("{name} failed · {msg}"),
                             errors: 1,
                             done: true,
+                            quiet,
                             ..Default::default()
                         },
                     );

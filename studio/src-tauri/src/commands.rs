@@ -232,6 +232,7 @@ pub fn import_export_zip(
         state.job.clone(),
         state.db_path.clone(),
         "import",
+        false,
         move |app, db_path| {
             crate::app_log::write(app, &format!("zip import start {path}"));
             let _ = app.emit(
@@ -315,6 +316,7 @@ pub fn sync_self(username: String, app: AppHandle, state: State<'_, AppState>) -
         state.job.clone(),
         state.db_path.clone(),
         "sync",
+        false,
         move |app, db_path| {
             let clean = username.trim().trim_start_matches('@').to_string();
             let _ = app.emit(
@@ -526,6 +528,7 @@ pub fn tmdb_enrich(app: AppHandle, state: State<'_, AppState>) -> Result<(), Str
         state.job.clone(),
         state.db_path.clone(),
         "enrich",
+        false,
         move |app, db_path| {
             let log_file = crate::app_log::log_path(app)?;
             crate::app_log::write(app, "enrich started");
@@ -884,6 +887,7 @@ pub fn taste_analyze(
         state.job.clone(),
         state.db_path.clone(),
         "taste",
+        false,
         move |app, db_path| {
             let db = crate::jobs::open_worker_db(&db_path)?;
             let model = crate::taste::stored_model(&db).unwrap_or_else(|_| "unknown".into());

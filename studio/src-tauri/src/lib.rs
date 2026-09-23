@@ -6,6 +6,7 @@ mod letterboxd;
 mod migration;
 mod models;
 mod queries;
+mod resident;
 mod storage;
 mod taste;
 #[cfg(windows)]
@@ -186,14 +187,12 @@ pub fn run() {
 
         builder = builder
             .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-                if let Some(window) = app.get_webview_window("main") {
-                    #[cfg(windows)]
-                    windows_icon::apply(&window);
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                crate::resident::reveal_main(app, true);
             }))
+            .plugin(tauri_plugin_autostart::init(
+                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                Some(vec![crate::resident::AUTOSTART_ARG]),
+            ))
             .plugin(
                 tauri_plugin_window_state::Builder::new()
                     .with_state_flags(
@@ -226,12 +225,8 @@ pub fn run() {
                     );
                     #[cfg(windows)]
                     windows_icon::apply(&window);
-                    let _ = window.unminimize();
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                    #[cfg(windows)]
-                    windows_icon::apply(&window);
                 }
+                crate::resident::present_on_launch(app.handle());
             }
 
             Ok(())
@@ -279,6 +274,8 @@ pub fn run() {
             commands::list_friends,
             commands::remove_friend,
             commands::update_preflight,
+            resident::set_resident_prefs,
+            resident::quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -4,10 +4,12 @@ import type { Accent, Theme } from "../../core/types";
 import type { InstallInfo, LibraryCoverage, TasteKeyStatus } from "../../platform/types/film";
 import { SettingsView } from "./SettingsView";
 
-const { checkAppUpdate, getInstallInfo, listen, tasteKeyStatus, tasteSetModel, tmdbKeyStatus } = vi.hoisted(() => ({
+const { checkAppUpdate, getInstallInfo, listen, loadResidentPrefs, saveResidentPrefs, tasteKeyStatus, tasteSetModel, tmdbKeyStatus } = vi.hoisted(() => ({
   checkAppUpdate: vi.fn(),
   getInstallInfo: vi.fn(),
   listen: vi.fn(),
+  loadResidentPrefs: vi.fn(),
+  saveResidentPrefs: vi.fn(),
   tasteKeyStatus: vi.fn(),
   tasteSetModel: vi.fn(),
   tmdbKeyStatus: vi.fn(),
@@ -44,6 +46,10 @@ vi.mock("../../platform/install", () => ({
   resetAppData: vi.fn(),
 }));
 vi.mock("../../platform/log", () => ({ log: vi.fn() }));
+vi.mock("../../platform/resident", () => ({
+  loadResidentPrefs,
+  saveResidentPrefs,
+}));
 vi.mock("../../platform/updater", () => ({
   checkAppUpdate,
   downloadAndInstallUpdate: vi.fn(),
@@ -159,6 +165,12 @@ describe("SettingsView", () => {
     });
     tasteSetModel.mockResolvedValue(statusWithFourModels);
     getInstallInfo.mockResolvedValue(null);
+    loadResidentPrefs.mockResolvedValue({
+      launchAtLogin: false,
+      startMinimized: false,
+      closeMinimizes: false,
+    });
+    saveResidentPrefs.mockResolvedValue(undefined);
   });
 
   it("exposes the four named rail destinations and shows one panel at a time", () => {
@@ -219,6 +231,40 @@ describe("SettingsView", () => {
     expect(updates).toHaveClass("settings-system-updates");
     expect(within(updates!).getByText("Version 0.12.3")).toBeInTheDocument();
     expect(within(updates!).getByRole("button", { name: "Check for updates" })).toBeInTheDocument();
+  });
+
+  it("nests start-in-tray under open-with-Windows and can keep Osvell running when closed", async () => {
+    renderSettings();
+    fireEvent.click(screen.getByRole("button", { name: "System" }));
+
+    const openWithWindows = await screen.findByRole("switch", { name: "Open with Windows" });
+    const startInTray = screen.getByRole("switch", { name: "Start in the tray" });
+    const keepRunning = screen.getByRole("switch", { name: "Keep running when closed" });
+
+    await waitFor(() => expect(openWithWindows).toBeEnabled());
+    expect(startInTray).toBeDisabled();
+    expect(screen.getByText(/always opens on Home/)).toBeInTheDocument();
+    expect(screen.getByText(/about once an hour/)).toBeInTheDocument();
+
+    fireEvent.click(openWithWindows);
+    expect(startInTray).toBeEnabled();
+    await waitFor(() =>
+      expect(saveResidentPrefs).toHaveBeenLastCalledWith({
+        launchAtLogin: true,
+        startMinimized: false,
+        closeMinimizes: false,
+      }),
+    );
+
+    fireEvent.click(startInTray);
+    fireEvent.click(keepRunning);
+    await waitFor(() =>
+      expect(saveResidentPrefs).toHaveBeenLastCalledWith({
+        launchAtLogin: true,
+        startMinimized: true,
+        closeMinimizes: true,
+      }),
+    );
   });
 
   it("badges System after an update check without adding a rail destination", async () => {

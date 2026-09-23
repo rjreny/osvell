@@ -78,7 +78,8 @@ pub fn spawn_feed_sync(
             return Ok(false);
         }
     }
-    crate::jobs::spawn_job(app, slot, db_path, "feeds", move |app, db_path| {
+    let quiet = !force;
+    crate::jobs::spawn_job(app, slot, db_path, "feeds", quiet, move |app, db_path| {
         let mut db = crate::jobs::open_worker_db(&db_path)?;
         let report = run_feed_sync(&mut db, force, |label, current, total| {
             let _ = app.emit(
@@ -88,6 +89,7 @@ pub fn spawn_feed_sync(
                     label: label.to_string(),
                     current,
                     total,
+                    quiet,
                     ..Default::default()
                 },
             );
@@ -129,6 +131,7 @@ pub fn spawn_feed_sync(
                 total: 1,
                 errors: report.errors.len() as u32,
                 done: true,
+                quiet,
                 feeds: Some(report),
                 ..Default::default()
             },

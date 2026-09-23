@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import { loadResidentPrefs, subscribeResident } from "../../platform/resident";
 import { windowApi } from "../../platform/window";
 
 export function TitleBar() {
   const [maximized, setMaximized] = useState(false);
+  const [closeMinimizes, setCloseMinimizes] = useState(false);
 
   useEffect(() => {
     const win = windowApi();
@@ -14,7 +16,20 @@ export function TitleBar() {
     return () => unlisten?.();
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+    void loadResidentPrefs().then((prefs) => {
+      if (alive) setCloseMinimizes(prefs.closeMinimizes);
+    });
+    const unsubscribe = subscribeResident((prefs) => setCloseMinimizes(prefs.closeMinimizes));
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, []);
+
   const win = windowApi();
+  const closeLabel = closeMinimizes ? "Hide" : "Close";
 
   return (
     <header className="titlebar">
@@ -36,7 +51,19 @@ export function TitleBar() {
             </svg>
           )}
         </button>
-        <button type="button" className="tb-btn close" aria-label="Close" title="Close" onClick={() => void win.close()}>
+        <button
+          type="button"
+          className="tb-btn close"
+          aria-label={closeLabel}
+          title={closeMinimizes ? "Hide. Shift-click to quit" : "Close"}
+          onClick={(event) => {
+            if (closeMinimizes && event.shiftKey) {
+              void win.quit();
+              return;
+            }
+            void win.close();
+          }}
+        >
           <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
             <path
               fill="currentColor"

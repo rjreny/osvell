@@ -32,6 +32,7 @@ import {
   resetAppData,
 } from "../../platform/install";
 import { log } from "../../platform/log";
+import { loadResidentPrefs, saveResidentPrefs, type ResidentPrefs } from "../../platform/resident";
 import {
   checkAppUpdate,
   downloadAndInstallUpdate,
@@ -47,6 +48,50 @@ const idleProgress: UpdateProgress = {
   version: null,
   error: null,
 };
+
+const emptyResident: ResidentPrefs = {
+  launchAtLogin: false,
+  startMinimized: false,
+  closeMinimizes: false,
+};
+
+function PrefSwitch({
+  id,
+  label,
+  hint,
+  checked,
+  disabled,
+  nested,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  hint: string;
+  checked: boolean;
+  disabled?: boolean;
+  nested?: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className={`settings-switch${nested ? " is-nested" : ""}${disabled && nested ? " is-locked" : ""}`}>
+      <div>
+        <p id={id} className="settings-switch-label">{label}</p>
+        <p className="hint">{hint}</p>
+      </div>
+      <button
+        type="button"
+        className="settings-toggle"
+        role="switch"
+        aria-checked={checked}
+        aria-labelledby={id}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+      >
+        <span />
+      </button>
+    </div>
+  );
+}
 
 export type SettingsSection = "library" | "appearance" | "taste" | "system";
 
@@ -113,7 +158,46 @@ export function SettingsView({
   const [lastImport, setLastImport] = useState<ImportResult | null>(null);
   const [lastEnrich, setLastEnrich] = useState<EnrichReport | null>(null);
   const [syncDetailsOpen, setSyncDetailsOpen] = useState(false);
+  const [resident, setResident] = useState<ResidentPrefs>(emptyResident);
+  const [residentReady, setResidentReady] = useState(false);
+  const residentRef = useRef(resident);
+  residentRef.current = resident;
   const tasteModelChangeRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void loadResidentPrefs().then((prefs) => {
+      if (!alive) return;
+      setResident(prefs);
+      setResidentReady(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  async function updateResident(patch: Partial<ResidentPrefs>) {
+    const previous = residentRef.current;
+    const next = {
+      ...previous,
+      ...patch,
+      startMinimized:
+        (patch.launchAtLogin ?? previous.launchAtLogin) &&
+        (patch.startMinimized ?? previous.startMinimized),
+    };
+    if (patch.launchAtLogin === false) next.startMinimized = false;
+    residentRef.current = next;
+    setResident(next);
+    try {
+      await saveResidentPrefs(next);
+    } catch (err) {
+      log("warn", "startup preferences failed", err);
+      onStatus("Could not update startup settings");
+      const restored = await loadResidentPrefs().catch(() => previous);
+      residentRef.current = restored;
+      setResident(restored);
+    }
+  }
 
   useEffect(() => {
     void (async () => {
@@ -685,6 +769,43 @@ export function SettingsView({
             <h2>System</h2>
           </header>
           <div className="settings-pref-list">
+          <section className="settings-pref-row settings-startup">
+            <div className="settings-pref-label">
+              <h3>Startup</h3>
+            </div>
+            <div className="settings-pref-control">
+              <div className="settings-switch-list">
+                <PrefSwitch
+                  id="open-with-windows"
+                  label="Open with Windows"
+                  hint="Starts when you sign in, so new diary activity can be picked up before you open Osvell."
+                  checked={resident.launchAtLogin}
+                  disabled={!residentReady}
+                  onChange={(launchAtLogin) => void updateResident({ launchAtLogin })}
+                />
+                <PrefSwitch
+                  id="start-in-tray"
+                  label="Start in the tray"
+                  hint="Stay in the tray at sign-in instead of opening a window."
+                  checked={resident.startMinimized}
+                  nested
+                  disabled={!residentReady || !resident.launchAtLogin}
+                  onChange={(startMinimized) => void updateResident({ startMinimized })}
+                />
+                <PrefSwitch
+                  id="keep-running"
+                  label="Keep running when closed"
+                  hint="Closing hides Osvell so the next open is immediate. Shift-click close, press Ctrl+Q, or choose Quit in the tray menu to exit."
+                  checked={resident.closeMinimizes}
+                  disabled={!residentReady}
+                  onChange={(closeMinimizes) => void updateResident({ closeMinimizes })}
+                />
+              </div>
+              <p className="hint">
+                Osvell always opens on Home. While it is running, including in the tray, it checks Letterboxd about once an hour for new diary and friend activity and backs off if Letterboxd asks it to wait.
+              </p>
+            </div>
+          </section>
           <section className="settings-pref-row settings-system-device">
           <div className="settings-pref-label">
             <h3>This PC</h3>
