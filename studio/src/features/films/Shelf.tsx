@@ -5,14 +5,16 @@ export function Shelf({
   action,
   children,
   empty,
+  className = "",
 }: {
   title: string;
   action?: ReactNode;
   children: ReactNode;
   empty?: ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="shelf">
+    <section className={`shelf${className ? ` ${className}` : ""}`}>
       <header className="shelf-head">
         <h2>{title}</h2>
         {action}

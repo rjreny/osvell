@@ -4,7 +4,6 @@ import { isReleasedYear } from "../../core/released";
 import { getFilm, tasteGet } from "../../platform/filmLibrary";
 import type { FilmDetail, HomeViewModel, LibraryItem, SeriesProgress, TastePick } from "../../platform/types/film";
 import { FilmCard } from "./FilmCard";
-import { Poster } from "./Poster";
 import { RatingDisplay } from "./RatingDisplay";
 import { Shelf } from "./Shelf";
 
@@ -80,7 +79,7 @@ export function HomeView({
         const picks = report?.picks?.length
           ? report.picks
           : [...(report?.newPicks ?? []), ...(report?.watchlistPicks ?? [])];
-        setUpNext(picks.filter((pick) => isReleasedYear(pick.year)).slice(0, 8));
+        setUpNext(picks.filter((pick) => isReleasedYear(pick.year)).slice(0, 16));
       })
       .catch(() => {
         if (!cancelled) setUpNext([]);
@@ -167,44 +166,6 @@ export function HomeView({
       )}
 
       <div className="home-shelves">
-        {home.series ? <SeriesBoard series={home.series} onSelectFilm={onSelectFilm} /> : null}
-
-        {upNext.length ? (
-          <Shelf title="Up next">
-            {upNext.map((pick) => {
-              const id = pick.filmId || (pick.tmdbId ? `tmdb:${pick.tmdbId}` : "");
-              if (!id) return null;
-              return (
-                <FilmCard
-                  key={id}
-                  film={{
-                    id,
-                    title: pick.title,
-                    year: pick.year,
-                    poster: pick.poster,
-                    currentRating: null,
-                  }}
-                  onSelect={onSelectFilm}
-                  showRating={false}
-                />
-              );
-            })}
-          </Shelf>
-        ) : null}
-
-        {home.thisMonth?.length ? (
-          <Shelf title="This time of year">
-            {home.thisMonth.map((film) => (
-              <FilmCard
-                key={film.id}
-                film={film}
-                caption={`${film.years} years`}
-                onSelect={onSelectFilm}
-              />
-            ))}
-          </Shelf>
-        ) : null}
-
         <Shelf
           title="Recent from your log"
           action={
@@ -222,6 +183,23 @@ export function HomeView({
             <FilmCard key={film.id} film={film} onSelect={onSelectFilm} />
           ))}
         </Shelf>
+
+        {home.series || upNext.length ? (
+          <NextShelf series={home.series} picks={upNext} onSelectFilm={onSelectFilm} />
+        ) : null}
+
+        {home.thisMonth?.length ? (
+          <Shelf title="This time of year">
+            {home.thisMonth.map((film) => (
+              <FilmCard
+                key={film.id}
+                film={film}
+                caption={`${film.years} years`}
+                onSelect={onSelectFilm}
+              />
+            ))}
+          </Shelf>
+        ) : null}
 
         {home.topRated.length ? (
           <Shelf title="Top rated">
@@ -264,59 +242,96 @@ export function HomeView({
   );
 }
 
-function SeriesBoard({
+function NextShelf({
   series,
+  picks,
   onSelectFilm,
 }: {
-  series: SeriesProgress;
+  series: SeriesProgress | null | undefined;
+  picks: TastePick[];
   onSelectFilm: (id: string) => void;
 }) {
+  const [mode, setMode] = useState<"next" | "series">(picks.length ? "next" : "series");
+  const active = series && (mode === "series" || !picks.length) ? "series" : "next";
   const nowYear = new Date().getFullYear();
-  const nextId = series.parts.find(
+  const nextId = series?.parts.find(
     (part) => !part.watched && (part.year == null || part.year <= nowYear),
   )?.id;
 
   return (
-    <section className="series-board" aria-label={`Finish ${series.name}`}>
+    <section className="shelf next-shelf" aria-label={active === "series" && series ? `Finish ${series.name}` : "Watch Next"}>
       <header className="shelf-head">
-        <h2>Finish {series.name}</h2>
-        <span className="muted">
-          {series.watched} of {series.total}
-        </span>
+        <div className="next-tabs" role="tablist" aria-label="What to watch">
+          {picks.length ? (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={active === "next"}
+              className={`next-tab${active === "next" ? " is-on" : ""}`}
+              onClick={() => setMode("next")}
+            >
+              Watch Next
+            </button>
+          ) : null}
+          {series ? (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={active === "series"}
+              className={`next-tab${active === "series" ? " is-on" : ""}`}
+              onClick={() => setMode("series")}
+            >
+              Finish {series.name}
+            </button>
+          ) : null}
+        </div>
+        {active === "series" && series ? (
+          <span className="muted">
+            {series.watched} of {series.total}
+          </span>
+        ) : null}
       </header>
-      <ol className="series-list">
-        {series.parts.map((part, index) => {
-          const upcoming = part.year != null && part.year > nowYear;
-          const isNext = !part.watched && part.id === nextId;
-          const state = part.watched ? "Watched" : isNext ? "Next" : upcoming ? "Later" : "";
-          const body = (
-            <>
-              <span className="series-index">{index + 1}</span>
-              <Poster name={part.title} poster={part.poster} />
-              <span className="series-copy">
-                <strong>{part.title}</strong>
-                {part.year ? <small>{part.year}</small> : null}
-              </span>
-              <span className="series-state">{state}</span>
-            </>
-          );
-          return (
-            <li key={`${part.id}-${index}`}>
-              {part.openable ? (
-                <button
-                  type="button"
-                  className={`series-row${isNext ? " is-next" : ""}`}
-                  onClick={() => onSelectFilm(part.id)}
-                >
-                  {body}
-                </button>
-              ) : (
-                <div className={`series-row${isNext ? " is-next" : ""}`}>{body}</div>
-              )}
-            </li>
-          );
-        })}
-      </ol>
+      <div className="shelf-track">
+        {active === "next"
+          ? picks.map((pick) => {
+              const id = pick.filmId || (pick.tmdbId ? `tmdb:${pick.tmdbId}` : "");
+              if (!id) return null;
+              return (
+                <FilmCard
+                  key={id}
+                  film={{
+                    id,
+                    title: pick.title,
+                    year: pick.year,
+                    poster: pick.poster,
+                    currentRating: null,
+                  }}
+                  onSelect={onSelectFilm}
+                  showRating={false}
+                />
+              );
+            })
+          : series?.parts.map((part, index) => {
+              const upcoming = part.year != null && part.year > nowYear;
+              const isNext = !part.watched && part.id === nextId;
+              const state = part.watched ? "Watched" : isNext ? "Next" : upcoming ? "Later" : null;
+              return (
+                <FilmCard
+                  key={`${part.id}-${index}`}
+                  film={{
+                    id: part.id,
+                    title: part.title,
+                    year: part.year,
+                    poster: part.poster,
+                    currentRating: part.currentRating,
+                  }}
+                  caption={state ? `${index + 1} · ${state}` : String(index + 1)}
+                  showRating={part.watched}
+                  onSelect={part.openable ? onSelectFilm : undefined}
+                />
+              );
+            })}
+      </div>
     </section>
   );
 }

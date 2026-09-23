@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { getCoverage, getLibrary, getStats } from "../../platform/filmLibrary";
 import type { LibraryCoverage, LibraryItem, PersonStat, StatsBucket, StatsSnapshot } from "../../platform/types/film";
-import { FilmCard } from "./FilmCard";
-import { Shelf } from "./Shelf";
+import { Menu } from "../ui/Menu";
 
 const TABS = [
   { id: "activity", label: "Activity" },
@@ -97,7 +96,7 @@ function filmCount(count: number) {
   return `${count} ${count === 1 ? "film" : "films"}`;
 }
 
-export function StatsView({ onSelectFilm }: { onSelectFilm: (id: string) => void }) {
+export function StatsView({ onSelectFilm: _onSelectFilm }: { onSelectFilm: (id: string) => void }) {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [coverage, setCoverage] = useState<LibraryCoverage | null>(null);
   const [snapshot, setSnapshot] = useState<StatsSnapshot | null>(null);
@@ -152,18 +151,12 @@ export function StatsView({ onSelectFilm }: { onSelectFilm: (id: string) => void
   const activityTotal = viewingMonths.reduce((sum, month) => sum + month.count, 0);
   const genres = snapshot?.genres ?? [];
   const people = (snapshot?.people ?? []).filter((person) => person.role === role);
-  const topRated = [...ratings]
-    .sort((a, b) => (b.currentRating ?? 0) - (a.currentRating ?? 0) || b.viewingCount - a.viewingCount)
-    .slice(0, 12);
-  const mostRewatched = [...items]
-    .filter((film) => film.viewingCount > 1)
-    .sort((a, b) => b.viewingCount - a.viewingCount || (b.currentRating ?? 0) - (a.currentRating ?? 0))
-    .slice(0, 12);
   const ratingBuckets = distribution.map((count, index) => ({
     label: ((index + 1) / 2).toFixed(1).replace(".0", ""),
     count,
   }));
   const usual = ((distribution.indexOf(maxBucket) + 1) / 2).toFixed(1).replace(".0", "");
+  const ratingsSummary = `${ratings.length} films rated · most often ${usual} stars · ${fiveStarCount} five-star · ${ratingCoverage}% rated`;
 
   return (
     <div className="stats-page page-pad">
@@ -212,54 +205,19 @@ export function StatsView({ onSelectFilm }: { onSelectFilm: (id: string) => void
 
       <div className="stats-panel" role="tabpanel">
         {tab === "activity" ? (
-          <section className="stats-section stats-activity">
-            <header className="stats-section-head">
-              <h2>Watching activity</h2>
-              <p>{activityTotal ? "Last 24 months" : "0 logs in the last 24 months"}</p>
-            </header>
+          <StatsPane title="Watching activity" note={activityTotal ? "Last 24 months" : "0 logs in the last 24 months"}>
             <Histogram buckets={viewingMonths} className="is-activity" formatLabel={activityMonthLabel} />
-            {mostRewatched.length ? (
-              <div className="stats-shelf">
-                <Shelf title="Most rewatched">
-                  {mostRewatched.map((film) => (
-                    <FilmCard key={film.id} film={film} caption={`${film.viewingCount}× watched`} onSelect={onSelectFilm} />
-                  ))}
-                </Shelf>
-              </div>
-            ) : null}
-          </section>
+          </StatsPane>
         ) : null}
 
         {tab === "ratings" ? (
-          <section className="stats-section stats-ratings">
-            <header className="stats-section-head">
-              <h2>Ratings</h2>
-              <p>{ratings.length} films rated · most often {usual} stars</p>
-            </header>
+          <StatsPane title="Ratings" note={ratingsSummary}>
             <Histogram buckets={ratingBuckets} className="is-ratings" />
-            <dl className="stats-facts">
-              <div><dt>Average</dt><dd>{averageRating?.toFixed(1) ?? "—"}</dd></div>
-              <div><dt>Five stars</dt><dd>{fiveStarCount}</dd></div>
-              <div><dt>Rated</dt><dd>{ratingCoverage}%</dd></div>
-            </dl>
-            {topRated.length ? (
-              <div className="stats-shelf">
-                <Shelf title="Highest rated">
-                  {topRated.map((film) => (
-                    <FilmCard key={film.id} film={film} onSelect={onSelectFilm} />
-                  ))}
-                </Shelf>
-              </div>
-            ) : null}
-          </section>
+          </StatsPane>
         ) : null}
 
         {tab === "genres" ? (
-          <section className="stats-section stats-genres">
-            <header className="stats-section-head">
-              <h2>Your genres</h2>
-              <p>{snapshot?.metadataMovies ?? 0} enriched films watched</p>
-            </header>
+          <StatsPane title="Your genres" note={`${snapshot?.metadataMovies ?? 0} enriched films watched`} className="stats-genres">
             {genres.length ? (
               <RankList
                 rows={genres.map((genre) => ({
@@ -273,15 +231,11 @@ export function StatsView({ onSelectFilm }: { onSelectFilm: (id: string) => void
             ) : (
               <p className="stats-empty">No enriched viewing data yet.</p>
             )}
-          </section>
+          </StatsPane>
         ) : null}
 
         {tab === "decades" ? (
-          <section className="stats-section stats-decades">
-            <header className="stats-section-head">
-              <h2>Decades</h2>
-              <p>{decades.length} represented</p>
-            </header>
+          <StatsPane title="Decades" note={`${decades.length} represented`} className="stats-decades">
             {decades.length ? (
               <RankList
                 rows={decades.map(([decade, count]) => ({
@@ -294,34 +248,48 @@ export function StatsView({ onSelectFilm }: { onSelectFilm: (id: string) => void
             ) : (
               <p className="stats-empty">No release decades yet.</p>
             )}
-          </section>
+          </StatsPane>
         ) : null}
 
         {tab === "people" ? (
-          <section className="stats-section stats-people">
-            <header className="stats-section-head">
-              <h2>People</h2>
-              <p>Who you keep returning to</p>
-            </header>
-            <div className="stats-subtabs" role="tablist" aria-label="People roles">
-              {ROLES.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={role === item.id}
-                  className={`stats-tab${role === item.id ? " is-on" : ""}`}
-                  onClick={() => setRole(item.id)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
+          <StatsPane
+            title="People"
+            note="Who you keep returning to"
+            className="stats-people"
+            control={<Menu label="Role" value={role} options={[...ROLES]} onChange={setRole} />}
+          >
             <PeopleList people={people} />
-          </section>
+          </StatsPane>
         ) : null}
       </div>
     </div>
+  );
+}
+
+function StatsPane({
+  title,
+  note,
+  className = "",
+  control,
+  children,
+}: {
+  title: string;
+  note: string;
+  className?: string;
+  control?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className={`stats-section${className ? ` ${className}` : ""}`}>
+      <header className="stats-section-head">
+        <div>
+          <h2>{title}</h2>
+          <p>{note}</p>
+        </div>
+        {control}
+      </header>
+      <div className="stats-well">{children}</div>
+    </section>
   );
 }
 

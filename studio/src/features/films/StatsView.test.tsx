@@ -103,14 +103,14 @@ describe("StatsView", () => {
     renderStats();
 
     expect(await screen.findByRole("heading", { name: /watching activity/i })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /most rewatched/i })).toBeInTheDocument();
+    expect(document.querySelector(".stats-panel")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /^ratings$/i })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "Ratings" }));
 
     expect(screen.getByRole("heading", { name: /^ratings$/i })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /watching activity/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /highest rated/i })).toBeInTheDocument();
+    expect(document.querySelectorAll(".stats-panel .stats-section")).toHaveLength(1);
   });
 
   it("does not use a middot summary strip as the hero", async () => {
@@ -155,7 +155,7 @@ describe("StatsView", () => {
     expect(within(decades!).getByText("1990s")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "People" }));
-    expect(screen.getByRole("tab", { name: "Directors" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText("Directors")).toBeInTheDocument();
     expect(screen.getByText("Dee Director")).toBeInTheDocument();
   });
 });
