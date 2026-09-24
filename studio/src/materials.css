@@ -1948,6 +1948,10 @@ html[data-theme="light"] .ghost {
   z-index: 1;
 }
 
+.shelf {
+  min-width: 0;
+}
+
 .shelf-head {
   display: flex;
   justify-content: space-between;
@@ -1962,6 +1966,11 @@ html[data-theme="light"] .ghost {
   letter-spacing: -0.02em;
 }
 
+.shelf-row {
+  position: relative;
+  min-width: 0;
+}
+
 .shelf-track,
 .film-grid {
   display: flex;
@@ -1969,6 +1978,65 @@ html[data-theme="light"] .ghost {
   overflow: hidden;
   padding: 16px 4px 8px;
   margin: -8px -4px 0;
+}
+
+.shelf-track {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: 48px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior-x: contain;
+}
+
+.shelf-track::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.shelf-track > * {
+  scroll-snap-align: start;
+}
+
+.shelf-arrow {
+  position: absolute;
+  z-index: 2;
+  top: calc(16px + (var(--poster-h) - 40px) / 2);
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--text);
+  padding: 0;
+}
+
+.shelf-arrow.is-prev { left: 8px; }
+.shelf-arrow.is-next { right: 8px; }
+
+.shelf-arrow svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.shelf-arrow:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.shelf-arrow:focus-visible {
+  outline-offset: 2px;
+}
+
+.shelf-arrow:disabled {
+  visibility: hidden;
 }
 
 .film-grid {

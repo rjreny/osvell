@@ -5,7 +5,7 @@ import { getFilm, tasteGet } from "../../platform/filmLibrary";
 import type { FilmDetail, HomeViewModel, LibraryItem, SeriesProgress, TastePick } from "../../platform/types/film";
 import { FilmCard } from "./FilmCard";
 import { RatingDisplay } from "./RatingDisplay";
-import { Shelf } from "./Shelf";
+import { Shelf, ShelfTrack } from "./Shelf";
 
 function heroSrc(film: LibraryItem, detail: FilmDetail | null) {
   const banner = detail?.backdrop || film.backdrop;
@@ -45,7 +45,7 @@ export function HomeView({
   }, [home]);
   const [index, setIndex] = useState(0);
   const [detail, setDetail] = useState<FilmDetail | null>(null);
-  const [upNext, setUpNext] = useState<TastePick[]>([]);
+  const [upNext, setUpNext] = useState<TastePick[] | null>(null);
   const featured = slides[index] ?? home?.topRated[0] ?? null;
 
   useEffect(() => {
@@ -184,7 +184,7 @@ export function HomeView({
           ))}
         </Shelf>
 
-        {home.series || upNext.length ? (
+        {upNext && (home.series || upNext.length) ? (
           <NextShelf series={home.series} picks={upNext} onSelectFilm={onSelectFilm} />
         ) : null}
 
@@ -251,8 +251,8 @@ function NextShelf({
   picks: TastePick[];
   onSelectFilm: (id: string) => void;
 }) {
-  const [mode, setMode] = useState<"next" | "series">(picks.length ? "next" : "series");
-  const active = series && (mode === "series" || !picks.length) ? "series" : "next";
+  const [choice, setChoice] = useState<"next" | "series" | null>(null);
+  const active = choice === "series" && series ? "series" : picks.length ? "next" : series ? "series" : "next";
   const nowYear = new Date().getFullYear();
   const nextId = series?.parts.find(
     (part) => !part.watched && (part.year == null || part.year <= nowYear),
@@ -268,7 +268,7 @@ function NextShelf({
               role="tab"
               aria-selected={active === "next"}
               className={`next-tab${active === "next" ? " is-on" : ""}`}
-              onClick={() => setMode("next")}
+              onClick={() => setChoice("next")}
             >
               Watch Next
             </button>
@@ -279,7 +279,7 @@ function NextShelf({
               role="tab"
               aria-selected={active === "series"}
               className={`next-tab${active === "series" ? " is-on" : ""}`}
-              onClick={() => setMode("series")}
+              onClick={() => setChoice("series")}
             >
               Finish {series.name}
             </button>
@@ -291,7 +291,7 @@ function NextShelf({
           </span>
         ) : null}
       </header>
-      <div className="shelf-track">
+      <ShelfTrack key={active}>
         {active === "next"
           ? picks.map((pick) => {
               const id = pick.filmId || (pick.tmdbId ? `tmdb:${pick.tmdbId}` : "");
@@ -331,7 +331,7 @@ function NextShelf({
                 />
               );
             })}
-      </div>
+      </ShelfTrack>
     </section>
   );
 }
