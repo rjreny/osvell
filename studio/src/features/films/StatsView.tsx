@@ -344,7 +344,9 @@ export function StatsView({ onSelectFilm }: { onSelectFilm: (id: string) => void
             <h2>People</h2>
             <p>Who you keep returning to</p>
           </div>
-          <Menu label="Role" value={role} options={[...ROLES]} onChange={setRole} />
+          <div className="flat-menu-toolbar stats-role-toolbar">
+            <Menu label="Role" value={role} options={[...ROLES]} onChange={setRole} />
+          </div>
         </header>
         <PeopleList people={people} />
       </section>

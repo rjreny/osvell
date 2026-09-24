@@ -929,6 +929,27 @@ html[data-theme="light"] .scroll-thumb::before {
   cursor: default;
 }
 
+.settings-subgroup > input {
+  margin-top: 4px;
+}
+
+.settings-subgroup > .hint,
+.settings-model-name + .hint {
+  margin: 8px 0 0;
+}
+
+.settings-subgroup > .settings-actions,
+.settings-subgroup > .settings-sync-disclosure,
+.settings-subgroup > .update-line,
+.settings-subgroup > .settings-system-version {
+  margin-top: 16px;
+}
+
+.settings-page .update-line {
+  gap: 10px 16px;
+  margin-bottom: 0;
+}
+
 .settings-subgroup .settings-switch-list {
   margin-top: 12px;
 }
@@ -938,7 +959,7 @@ html[data-theme="light"] .scroll-thumb::before {
 }
 
 .settings-system-version {
-  margin: 0;
+  margin: 12px 0 0;
   color: var(--text);
   font-weight: 600;
 }
@@ -1057,7 +1078,7 @@ html[data-theme="light"] .scroll-thumb::before {
   align-items: baseline;
   flex-wrap: wrap;
   gap: 8px 14px;
-  margin: 0 0 12px;
+  margin: 16px 0 0;
 }
 
 .settings-sync-disclosure > .hint,
@@ -1226,8 +1247,8 @@ html[data-theme="light"] .scroll-thumb::before {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  margin: 0 0 10px;
+  gap: 10px 16px;
+  margin: 16px 0 0;
 }
 
 .settings-page .primary,
@@ -2815,6 +2836,16 @@ html[data-theme="light"] .ghost {
   align-items: center;
 }
 
+.stats-role-toolbar {
+  margin: 0;
+}
+
+.stats-role-toolbar .menu {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 148px;
+}
+
 .stats-analysis-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(200px, 240px);
@@ -2822,9 +2853,24 @@ html[data-theme="light"] .ghost {
   min-width: 0;
 }
 
+.stats-analysis-layout > * {
+  min-width: 0;
+}
+
 .stats-analysis-layout .stats-chart {
   height: 240px;
+  min-width: 0;
   padding: 0;
+  overflow: hidden;
+}
+
+.stats-histogram.is-fill {
+  min-width: 0;
+}
+
+.stats-histogram.is-activity li > span {
+  overflow: hidden;
+  font-size: 10px;
 }
 
 .stats-analysis-layout .stats-histogram.is-fill,
