@@ -875,16 +875,16 @@ html[data-theme="light"] .scroll-thumb::before {
   font-weight: 650;
 }
 
+.settings-subgroup > h3,
+.settings-subgroup-head {
+  margin-bottom: 10px;
+}
+
 .settings-subgroup-head {
   display: flex;
   align-items: baseline;
   justify-content: flex-start;
   gap: 12px;
-  margin-bottom: 8px;
-}
-
-.settings-subgroup-head .text-btn {
-  margin-left: auto;
 }
 
 .settings-subgroup-head .hint,
@@ -913,15 +913,20 @@ html[data-theme="light"] .scroll-thumb::before {
   margin-top: 12px;
 }
 
-.settings-actions .text-btn {
-  width: max-content;
+.settings-actions .text-btn,
+.settings-actions .ghost-pill,
+.settings-actions .primary {
   font-weight: 600;
 }
 
-.settings-tertiary-action {
-  display: inline-flex;
-  margin-top: 10px;
-  font-weight: 600;
+.settings-actions .text-btn {
+  min-height: 38px;
+  padding: 0 2px;
+}
+
+.settings-actions .text-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .settings-subgroup .settings-switch-list {
@@ -1278,20 +1283,6 @@ html[data-theme="light"] .scroll-thumb::before {
   min-width: 76px;
   height: 32px;
   border-radius: var(--radius-pill);
-}
-
-.settings-taste-change {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  gap: 4px;
-  margin-top: 2px;
-  font-weight: 600;
-}
-
-.settings-taste-change:disabled {
-  opacity: .55;
-  cursor: default;
 }
 
 .taste-model-modal {
@@ -2491,14 +2482,13 @@ html[data-theme="light"] .ghost {
 }
 
 .utility-canvas {
-  width: min(100%, 1680px);
+  width: 100%;
 }
 
 .stats-overview {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 20px 32px;
-  max-width: 1240px;
   margin: 0;
   padding: 2px 0 24px;
   list-style: none;
@@ -2895,13 +2885,13 @@ html[data-theme="light"] .ghost {
 
 .stats-rewatch .shelf-track {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
   overflow: visible;
   gap: 16px;
 }
 
 .stats-rewatch .film-card {
-  width: auto;
+  width: 100%;
 }
 
 .stats-rewatch .title-year {

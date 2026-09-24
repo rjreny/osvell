@@ -448,10 +448,10 @@ export function SettingsView({
                 <button type="button" className="ghost-pill" disabled={busy} onClick={() => void importExport()}>
                   {busy ? "Working…" : "Import history"}
                 </button>
+                <button type="button" className="text-btn" disabled={busy} onClick={() => void runEnrich()}>
+                  Match posters
+                </button>
               </div>
-              <button type="button" className="text-btn settings-tertiary-action" disabled={busy} onClick={() => void runEnrich()}>
-                Match posters <span aria-hidden="true">›</span>
-              </button>
               <div className="settings-sync-disclosure">
                 <button
                   type="button"
@@ -577,21 +577,21 @@ export function SettingsView({
             <h2>Taste</h2>
             <p className="hint">Choose how Taste reads your film history and whether it can check the web.</p>
             <div className="settings-subgroup">
-              <header className="settings-subgroup-head">
-                <h3>Recommendation model</h3>
+              <h3>Recommendation model</h3>
+              <strong className="settings-model-name">{tasteModelLabel}</strong>
+              <p className="hint">{tasteModelBlurb}</p>
+              <div className="settings-actions">
                 <button
                   ref={tasteModelChangeRef}
                   type="button"
-                  className="text-btn settings-taste-change"
+                  className="text-btn"
                   aria-label="Change recommendation model"
                   disabled={busy || !(tasteStatus?.models.length)}
                   onClick={() => setTasteModelOpen(true)}
                 >
-                  Change <span aria-hidden="true">›</span>
+                  Change
                 </button>
-              </header>
-              <strong className="settings-model-name">{tasteModelLabel}</strong>
-              <p className="hint">{tasteModelBlurb}</p>
+              </div>
             </div>
             <div className="settings-subgroup">
               <PrefSwitch
@@ -665,6 +665,7 @@ export function SettingsView({
 
           <section className="settings-quadrant">
             <h2>System</h2>
+            <p className="hint">Startup, storage, and updates for this PC.</p>
             <div className="settings-subgroup">
               <h3>Startup</h3>
               <div className="settings-switch-list">
