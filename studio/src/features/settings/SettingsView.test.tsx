@@ -173,34 +173,15 @@ describe("SettingsView", () => {
     saveResidentPrefs.mockResolvedValue(undefined);
   });
 
-  it("exposes the four named rail destinations and shows one panel at a time", () => {
+  it("shows library, appearance, taste, and system together in that order", () => {
     renderSettings({ coverage: emptyCoverage });
 
-    const rail = screen.getByRole("navigation", { name: "Settings" });
-    const destinations = within(rail).getAllByRole("button");
-    expect(destinations).toHaveLength(4);
-    expect(destinations.map((destination) => destination.getAttribute("aria-label"))).toEqual([
-      "Library",
-      "Appearance",
-      "Taste",
-      "System",
-    ]);
-    expect(screen.getByRole("heading", { name: "Library", level: 2 })).toBeInTheDocument();
-
-    fireEvent.click(within(rail).getByRole("button", { name: "Appearance" }));
-
-    expect(screen.getByRole("heading", { name: "Appearance", level: 2 })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Library", level: 2 })).not.toBeInTheDocument();
-
-    fireEvent.click(within(rail).getByRole("button", { name: "Taste" }));
-
-    expect(screen.getByRole("heading", { name: "Taste", level: 2 })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Appearance", level: 2 })).not.toBeInTheDocument();
-
-    fireEvent.click(within(rail).getByRole("button", { name: "System" }));
-
-    expect(screen.getByRole("heading", { name: "System", level: 2 })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Taste", level: 2 })).not.toBeInTheDocument();
+    const grid = document.querySelector(".settings-grid");
+    expect(grid).not.toBeNull();
+    expect(
+      [...grid!.querySelectorAll(":scope > section > h2")].map((heading) => heading.textContent),
+    ).toEqual(["Library", "Appearance", "Taste", "System"]);
+    expect(screen.queryByRole("navigation", { name: "Settings" })).not.toBeInTheDocument();
   });
 
   it("colocates This PC and Updates under System with a local divider", async () => {
@@ -214,10 +195,6 @@ describe("SettingsView", () => {
         fullHistoryAvailable: true,
       },
     });
-
-    const rail = screen.getByRole("navigation", { name: "Settings" });
-    expect(within(rail).getAllByRole("button")).toHaveLength(4);
-    fireEvent.click(within(rail).getByRole("button", { name: "System" }));
 
     const thisPcHeading = screen.getByRole("heading", { name: "This PC", level: 3 });
     const updatesHeading = screen.getByRole("heading", { name: "Updates", level: 3 });
@@ -235,7 +212,6 @@ describe("SettingsView", () => {
 
   it("nests start-in-tray under open-with-Windows and can keep Osvell running when closed", async () => {
     renderSettings();
-    fireEvent.click(screen.getByRole("button", { name: "System" }));
 
     const openWithWindows = await screen.findByRole("switch", { name: "Open with Windows" });
     const startInTray = screen.getByRole("switch", { name: "Start in the tray" });
@@ -267,7 +243,7 @@ describe("SettingsView", () => {
     );
   });
 
-  it("badges System after an update check without adding a rail destination", async () => {
+  it("badges Updates after an update check", async () => {
     checkAppUpdate.mockResolvedValue({
       available: true,
       version: "0.13.0",
@@ -275,23 +251,20 @@ describe("SettingsView", () => {
     });
     renderSettings();
 
-    const rail = screen.getByRole("navigation", { name: "Settings" });
-    fireEvent.click(within(rail).getByRole("button", { name: "System" }));
     fireEvent.click(screen.getByRole("button", { name: /check/i }));
 
+    const updates = screen.getByRole("heading", { name: "Updates", level: 3 }).closest("section");
+    expect(updates).not.toBeNull();
     await waitFor(() => {
-      expect(within(rail).getAllByRole("button")).toHaveLength(4);
-      expect(within(rail).getByRole("button", { name: "System, update available" })).toHaveTextContent(
-        "Update available",
-      );
+      expect(within(updates!).getByText("Update available")).toBeInTheDocument();
     });
     expect(screen.getByRole("button", { name: "Update to 0.13.0" })).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Settings" })).not.toBeInTheDocument();
   });
 
   it("presents theme choices as labeled previews and applies a selection", () => {
     const onTheme = vi.fn();
     renderSettings({ onTheme });
-    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
 
     const themeChoices = within(screen.getByRole("radiogroup", { name: "Theme" }));
     expect(themeChoices.getByRole("radio", { name: "System" })).toBeInTheDocument();
@@ -303,7 +276,6 @@ describe("SettingsView", () => {
   it("presents Osvell blue and System as quiet accent radios and applies a selection", () => {
     const onAccent = vi.fn();
     renderSettings({ onAccent });
-    fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
 
     const accentChoices = within(screen.getByRole("radiogroup", { name: "Accent" }));
     expect(accentChoices.getByRole("radio", { name: "Osvell blue" })).toBeInTheDocument();
@@ -334,7 +306,7 @@ describe("SettingsView", () => {
     expect(screen.getByText(expectedStatus, { selector: ".settings-letterboxd-status" })).toBeInTheDocument();
   });
 
-  it("makes Import history primary when the library is empty", () => {
+  it("keeps Sync now primary and Import history secondary when the library is empty", () => {
     renderSettings({
       coverage: {
         ...emptyCoverage,
@@ -342,10 +314,12 @@ describe("SettingsView", () => {
         source: "none",
         fullHistoryAvailable: false,
       },
+      username: "filmfan",
     });
 
-    const importButton = screen.getByRole("button", { name: /import history/i });
-    expect(importButton.className).toMatch(/primary/);
+    expect(screen.getByRole("button", { name: /sync now/i }).className).toMatch(/primary/);
+    expect(screen.getByRole("button", { name: /import history/i }).className).not.toMatch(/primary/);
+    expect(screen.getByRole("button", { name: /match posters/i }).className).toMatch(/text-btn/);
   });
 
   it("elevates Sync now after the library is established", () => {
@@ -387,9 +361,9 @@ describe("SettingsView", () => {
   it("keeps sync explanation collapsed until disclosed", () => {
     renderSettings({ coverage: emptyCoverage });
 
-    expect(screen.queryByText(/once an hour/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/no site scraping/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /how syncing works/i }));
-    expect(screen.getByText(/once an hour/i)).toBeInTheDocument();
+    expect(screen.getByText(/no site scraping/i)).toBeInTheDocument();
   });
 
   it("uses quiet human labels for configured TMDB", async () => {
@@ -410,7 +384,6 @@ describe("SettingsView", () => {
 
   it("does not show the full model zoo on the default Taste panel", async () => {
     renderSettings({ tasteStatus: statusWithFourModels });
-    fireEvent.click(screen.getByRole("button", { name: "Taste" }));
 
     expect(await screen.findByText("DeepSeek V4 Pro 0813")).toBeInTheDocument();
     expect(screen.queryByText(/1M ·/i)).not.toBeInTheDocument();
@@ -419,7 +392,6 @@ describe("SettingsView", () => {
 
   it("opens a centered dialog for model selection", async () => {
     renderSettings({ tasteStatus: statusWithFourModels });
-    fireEvent.click(screen.getByRole("button", { name: "Taste" }));
     fireEvent.click(await screen.findByRole("button", { name: "Change recommendation model" }));
 
     const dialog = await screen.findByRole("dialog", { name: /recommendation model/i });
@@ -430,7 +402,6 @@ describe("SettingsView", () => {
 
   it("applies a model choice and closes the dialog", async () => {
     renderSettings({ tasteStatus: statusWithFourModels });
-    fireEvent.click(screen.getByRole("button", { name: "Taste" }));
     fireEvent.click(await screen.findByRole("button", { name: "Change recommendation model" }));
     const dialog = await screen.findByRole("dialog", { name: /recommendation model/i });
 
@@ -442,7 +413,6 @@ describe("SettingsView", () => {
 
   it("dismisses the model dialog with Escape and restores focus to Change", async () => {
     renderSettings({ tasteStatus: statusWithFourModels });
-    fireEvent.click(screen.getByRole("button", { name: "Taste" }));
     const change = await screen.findByRole("button", { name: "Change recommendation model" });
     fireEvent.click(change);
     await screen.findByRole("dialog", { name: /recommendation model/i });
@@ -455,7 +425,6 @@ describe("SettingsView", () => {
 
   it("dismisses the model dialog from its backdrop", async () => {
     renderSettings({ tasteStatus: statusWithFourModels });
-    fireEvent.click(screen.getByRole("button", { name: "Taste" }));
     const change = await screen.findByRole("button", { name: "Change recommendation model" });
     fireEvent.click(change);
     const dialog = await screen.findByRole("dialog", { name: /recommendation model/i });

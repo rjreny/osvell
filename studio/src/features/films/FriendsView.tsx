@@ -95,18 +95,24 @@ export function FriendsView({
 
   return (
     <div className="friends-page page-pad">
-      <header className="page-head">
+      <div className="utility-canvas">
+      <header className="page-head friends-head">
         <div>
           <h1>Friends</h1>
-          <p className="muted">Public Letterboxd diaries — Osvell refreshes these feeds on its own</p>
+          <p className="muted">See what people you follow have been watching</p>
         </div>
         <button type="button" className="play-btn" disabled={busy} onClick={() => void refreshAll()}>
-          Sync all
+          {busy ? "Syncing…" : "Sync all"}
         </button>
       </header>
       <div className="friends-layout">
         <aside className="friends-side">
-          <h2>Following</h2>
+          <div className="friends-section-head">
+            <div>
+              <h2>Following</h2>
+              <p>{friends.length ? `${friends.length} ${friends.length === 1 ? "friend" : "friends"}` : "No one yet"}</p>
+            </div>
+          </div>
           <form
             className="friend-add"
             onSubmit={(e) => {
@@ -114,10 +120,12 @@ export function FriendsView({
               void addFriends();
             }}
           >
+            <label className="sr-only" htmlFor="friend-usernames">Letterboxd usernames</label>
             <input
+              id="friend-usernames"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              placeholder="Username, or several"
+              placeholder="Username, or several…"
               autoCapitalize="off"
               spellCheck={false}
             />
@@ -128,64 +136,77 @@ export function FriendsView({
           <ul className="friend-list">
             {friends.map((f) => (
               <li key={f.id}>
-                <div>
+                <div className="friend-list-copy">
                   <strong>@{f.username}</strong>
                   <span className="muted">
-                    {f.lastSyncAt ? new Date(f.lastSyncAt).toLocaleDateString() : "Not synced"}
+                    {f.lastSyncAt ? `Updated ${new Date(f.lastSyncAt).toLocaleDateString()}` : "Waiting for first sync"}
                   </span>
                   {f.lastSyncError ? <span className="form-error">{f.lastSyncError}</span> : null}
                 </div>
                 <button
                   type="button"
-                  className="text-btn"
+                  className="friend-more"
                   disabled={busy}
                   aria-label={`Remove @${f.username}`}
                   onClick={() => void removeOne(f)}
                 >
-                  Remove
+                  <span aria-hidden="true">···</span>
                 </button>
               </li>
             ))}
-            {!friends.length ? <li className="muted">Nobody yet.</li> : null}
+            {!friends.length ? (
+              <li className="friends-empty">
+                Add one or several Letterboxd usernames to bring their latest ratings into Osvell.
+              </li>
+            ) : null}
           </ul>
         </aside>
         <section className="friends-feed">
-          <h2>Latest ratings</h2>
+          <div className="friends-section-head">
+            <div>
+              <h2>Latest ratings</h2>
+              <p>{feed.length ? `${feed.length} recent ${feed.length === 1 ? "entry" : "entries"}` : "Nothing here yet"}</p>
+            </div>
+          </div>
           <ul className="activity-list">
             {feed.map((e, idx) => {
               const open = e.filmId && onSelectFilm ? () => onSelectFilm(e.filmId!) : null;
+              const body = (
+                <>
+                  <Poster name={e.title} poster={e.poster} />
+                  <span className="activity-copy">
+                    <strong title={e.title}>{e.title}</strong>
+                    <span className="muted">
+                      @{e.username}
+                      {e.year ? ` · ${e.year}` : ""}
+                    </span>
+                    <span className="activity-rating" aria-label={`${e.rating} out of 5 stars`}>
+                      <RatingDisplay value={e.rating} starsOnly />
+                    </span>
+                  </span>
+                </>
+              );
               return (
                 <li key={`${e.username}-${e.title}-${idx}`}>
                   {open ? (
-                    <button type="button" className="activity-open" onClick={open}>
-                      <Poster name={e.title} poster={e.poster} />
-                      <div className="activity-copy">
-                        <strong title={e.title}>{e.title}</strong>
-                        <span className="muted">
-                          @{e.username}
-                          {e.year ? `  ${e.year}` : ""}
-                        </span>
-                      </div>
+                    <button type="button" className="activity-card" onClick={open}>
+                      {body}
                     </button>
                   ) : (
-                    <>
-                      <Poster name={e.title} poster={e.poster} />
-                      <div className="activity-copy">
-                        <strong title={e.title}>{e.title}</strong>
-                        <span className="muted">
-                          @{e.username}
-                          {e.year ? `  ${e.year}` : ""}
-                        </span>
-                      </div>
-                    </>
+                    <div className="activity-card">{body}</div>
                   )}
-                  <RatingDisplay value={e.rating} starsOnly />
                 </li>
               );
             })}
           </ul>
-          {!feed.length ? <p className="muted">Sync friends to fill this feed.</p> : null}
+          {!feed.length ? (
+            <div className="friends-feed-empty">
+              <strong>Your friends’ latest ratings will land here.</strong>
+              <p>Follow a public diary, then sync to get started.</p>
+            </div>
+          ) : null}
         </section>
+      </div>
       </div>
     </div>
   );

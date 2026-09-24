@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   LibraryCoverage,
@@ -99,18 +99,17 @@ describe("StatsView", () => {
     expect(screen.queryByText(/genre affinity/i)).not.toBeInTheDocument();
   });
 
-  it("shows one stats view at a time", async () => {
+  it("shows the retrospective sections together", async () => {
     renderStats();
 
     expect(await screen.findByRole("heading", { name: /watching activity/i })).toBeInTheDocument();
-    expect(document.querySelector(".stats-panel")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: /^ratings$/i })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("tab", { name: "Ratings" }));
-
     expect(screen.getByRole("heading", { name: /^ratings$/i })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: /watching activity/i })).not.toBeInTheDocument();
-    expect(document.querySelectorAll(".stats-panel .stats-section")).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: /^genres$/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^decades$/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^people$/i })).toBeInTheDocument();
+    const rewatched = screen.getByRole("heading", { name: /most rewatched/i }).closest("section");
+    expect(within(rewatched!).getByText("4 watches")).toBeInTheDocument();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
   });
 
   it("does not use a middot summary strip as the hero", async () => {
@@ -140,22 +139,21 @@ describe("StatsView", () => {
   it("renders genres, decades, and people as the same ranked list", async () => {
     renderStats();
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Genres" }));
-    const genres = document.querySelector<HTMLElement>(".stats-genres");
-    expect(genres).not.toBeNull();
-    expect(genres!.querySelectorAll(".stats-genre-bar")).toHaveLength(snapshot.genres.length);
-    expect(within(genres!).getByText("2 films")).toBeInTheDocument();
-    expect(within(genres!).getByText("4.3 avg")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: /watching activity/i })).not.toBeInTheDocument();
+    const genres = await screen.findByRole("heading", { name: /^genres$/i });
+    const genresSection = genres.closest("section");
+    expect(genresSection).not.toBeNull();
+    expect(genresSection!.querySelectorAll(".stats-genre-bar")).toHaveLength(snapshot.genres.length);
+    expect(within(genresSection!).getByText("2 films")).toBeInTheDocument();
+    expect(within(genresSection!).getByText("4.3 avg")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /watching activity/i })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Decades" }));
-    const decades = document.querySelector<HTMLElement>(".stats-decades");
+    const decades = screen.getByRole("heading", { name: /^decades$/i }).closest("section");
     expect(decades!.querySelector(".stats-rank-list")).not.toBeNull();
     expect(decades!.querySelector(".stats-histogram")).toBeNull();
     expect(within(decades!).getByText("1990s")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "People" }));
-    expect(screen.getByText("Directors")).toBeInTheDocument();
-    expect(screen.getByText("Dee Director")).toBeInTheDocument();
+    const people = screen.getByRole("heading", { name: /^people$/i }).closest("section");
+    expect(within(people!).getByText("Directors")).toBeInTheDocument();
+    expect(within(people!).getByText("Dee Director")).toBeInTheDocument();
   });
 });

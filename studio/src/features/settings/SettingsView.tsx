@@ -93,25 +93,6 @@ function PrefSwitch({
   );
 }
 
-export type SettingsSection = "library" | "appearance" | "taste" | "system";
-
-const SECTIONS: SettingsSection[] = ["library", "appearance", "taste", "system"];
-const LABELS: Record<SettingsSection, string> = {
-  library: "Library",
-  appearance: "Appearance",
-  taste: "Taste",
-  system: "System",
-};
-
-export function libraryEstablished(coverage: LibraryCoverage | null): boolean {
-  return Boolean(
-    coverage &&
-      (coverage.uniqueMovies > 0 ||
-        coverage.fullHistoryAvailable ||
-        coverage.source !== "none"),
-  );
-}
-
 export function SettingsView({
   theme,
   accent,
@@ -139,7 +120,6 @@ export function SettingsView({
   onStatus: (text: string) => void;
   onRefresh: () => Promise<void>;
 }) {
-  const [section, setSection] = useState<SettingsSection>("library");
   const [updateNote, setUpdateNote] = useState("Not checked");
   const [signingConfigured, setSigningConfigured] = useState(true);
   const [pendingVersion, setPendingVersion] = useState<string | null>(null);
@@ -397,7 +377,6 @@ export function SettingsView({
     selectedTasteModel?.blurb ?? "Recommended for nuanced, evidence-grounded film picks.";
   const keyConnected = Boolean(keyStatus?.stored && keyStatus.valid === true && !replacing);
   const tasteConnected = Boolean(tasteStatus?.stored && tasteStatus.valid !== false && !tasteReplacing);
-  const established = libraryEstablished(coverage);
   const letterboxdConnected = Boolean(
     username.trim() &&
       (lastRssSyncAt ||
@@ -431,238 +410,175 @@ export function SettingsView({
 
   return (
     <div className="settings-page page-pad">
-      <header className="page-head">
-        <div>
-          <h1>Settings</h1>
-          <p className="muted">Library, taste, appearance, and this PC</p>
-        </div>
-      </header>
-      <div className="settings-shell">
-        <nav className="settings-rail" aria-label="Settings">
-          {SECTIONS.map((id) => (
-            <button
-              key={id}
-              type="button"
-              className={section === id ? "is-on" : undefined}
-              aria-label={
-                id === "system" && pendingVersion
-                  ? "System, update available"
-                  : LABELS[id]
-              }
-              aria-current={section === id ? "page" : undefined}
-              onClick={() => setSection(id)}
-            >
-              {LABELS[id]}
-              {id === "system" && pendingVersion ? (
-                <span className="settings-rail-badge" aria-hidden="true">Update available</span>
-              ) : null}
-            </button>
-          ))}
-        </nav>
-        <div className="settings-panel">
-        {section === "library" ? (
-        <section className="settings-group settings-library-panel">
-          <header className="settings-panel-intro">
+      <div className="settings-content">
+        <header className="page-head">
+          <div>
+            <h1>Settings</h1>
+            <p className="muted">Library, appearance, recommendations, and this PC</p>
+          </div>
+        </header>
+        <div className="settings-grid">
+          <section className="settings-quadrant settings-library-panel">
             <h2>Library</h2>
             <p className="hint">Your Letterboxd history, poster matching, and diary refresh.</p>
-          </header>
-          <div className="settings-pref-list">
-            <div className="settings-pref-row">
-              <div className="settings-pref-label">
-                <label htmlFor="settings-user">Letterboxd</label>
+            <div className="settings-subgroup">
+              <header className="settings-subgroup-head">
+                <h3>
+                  <label htmlFor="settings-user">Letterboxd</label>
+                </h3>
+                <p className={`hint settings-letterboxd-status${letterboxdConnected ? "" : " is-bad"}`}>
+                  {letterboxdConnected ? "Connected" : "Not connected"}
+                </p>
+              </header>
+              <input
+                id="settings-user"
+                value={username}
+                onChange={(e) => onUsername(e.target.value)}
+                placeholder="username"
+              />
+              <div className="settings-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={busy || !username.trim()}
+                  onClick={() => void refreshDiary()}
+                >
+                  {busy ? "Working…" : "Sync now"}
+                </button>
+                <button type="button" className="ghost-pill" disabled={busy} onClick={() => void importExport()}>
+                  {busy ? "Working…" : "Import history"}
+                </button>
               </div>
-              <div className="settings-pref-control">
-                <div className="settings-pref-main">
-                  <input
-                    id="settings-user"
-                    value={username}
-                    onChange={(e) => onUsername(e.target.value)}
-                    placeholder="username"
-                  />
-                  <p
-                    className={`hint settings-letterboxd-status${letterboxdConnected ? "" : " is-bad"}`}
-                  >
-                    {letterboxdConnected ? "Connected" : "Not connected"}
-                  </p>
-                </div>
-                <div className="field-row settings-pref-actions">
-                  <button
-                    type="button"
-                    className={established ? "ghost-pill" : "primary"}
-                    disabled={busy}
-                    onClick={() => void importExport()}
-                  >
-                    {busy ? "Working…" : "Import history"}
-                  </button>
-                  <button
-                    type="button"
-                    className={established ? "primary" : "ghost-pill"}
-                    disabled={busy || !username.trim()}
-                    onClick={() => void refreshDiary()}
-                  >
-                    Sync now
-                  </button>
-                  <button type="button" className="ghost-pill" disabled={busy} onClick={() => void runEnrich()}>
-                    Match posters
-                  </button>
-                </div>
-                <div className="settings-sync-disclosure">
-                  <button
-                    type="button"
-                    className="text-btn"
-                    aria-expanded={syncDetailsOpen}
-                    onClick={() => setSyncDetailsOpen((open) => !open)}
-                  >
-                    How syncing works <span aria-hidden="true">›</span>
-                  </button>
-                  <span className="hint">Last refresh: {formatRssSyncAt(lastRssSyncAt)}</span>
-                  {syncDetailsOpen ? (
-                    <p className="hint settings-sync-details">
-                      Osvell refreshes your public Letterboxd diary RSS about once an hour while the app is
-                      open, and when you launch it. Import a fresh Letterboxd export ZIP whenever you want to
-                      add ratings and reviews that were not diary logs. Same official feeds RSS readers use —
-                      no site scraping.
-                    </p>
-                  ) : null}
-                </div>
-                {rssPausedUntil ? (
-                  <p className="hint">
-                    Paused until {formatRssSyncAt(rssPausedUntil)} because Letterboxd asked us to wait.
+              <button type="button" className="text-btn settings-tertiary-action" disabled={busy} onClick={() => void runEnrich()}>
+                Match posters <span aria-hidden="true">›</span>
+              </button>
+              <div className="settings-sync-disclosure">
+                <button
+                  type="button"
+                  className="text-btn"
+                  aria-expanded={syncDetailsOpen}
+                  onClick={() => setSyncDetailsOpen((open) => !open)}
+                >
+                  How syncing works <span aria-hidden="true">›</span>
+                </button>
+                <span className="hint">Last refresh: {formatRssSyncAt(lastRssSyncAt)}</span>
+                {syncDetailsOpen ? (
+                  <p className="hint settings-sync-details">
+                    Osvell refreshes your public Letterboxd diary RSS about once an hour while the app is
+                    open, and when you launch it. Import a fresh Letterboxd export ZIP whenever you want to
+                    add ratings and reviews that were not diary logs. Same official feeds RSS readers use —
+                    no site scraping.
                   </p>
                 ) : null}
-                {diagnostics.map((w) => (
-                  <p key={w} className="hint">
-                    {w}
-                  </p>
-                ))}
-                {lastImport ? <p className="hint">{formatImport(lastImport)}</p> : null}
               </div>
+              {rssPausedUntil ? (
+                <p className="hint">
+                  Paused until {formatRssSyncAt(rssPausedUntil)} because Letterboxd asked us to wait.
+                </p>
+              ) : null}
+              {diagnostics.map((w) => (
+                <p key={w} className="hint">
+                  {w}
+                </p>
+              ))}
+              {lastImport ? <p className="hint">{formatImport(lastImport)}</p> : null}
             </div>
-            <div className="settings-pref-row settings-key-row">
-              <div className="settings-pref-label">
-                <label htmlFor="settings-tmdb">TMDB</label>
-              </div>
-              <div className="settings-pref-control">
-                <div className="settings-pref-main">
-                  {keyConnected ? (
-                    <p className="key-status">Configured</p>
-                  ) : (
-                    <input
-                      id="settings-tmdb"
-                      value={keyInput}
-                      onChange={(e) => setKeyInput(e.target.value)}
-                      placeholder={keyStatus?.stored ? "Paste a replacement key" : "v3 key from themoviedb.org"}
-                      spellCheck={false}
-                      disabled={busy}
-                    />
-                  )}
-                  {keyStatus?.stored && keyStatus.valid === false ? (
-                    <p className="key-status is-bad">{keyStatus.lastError ?? "TMDB rejected this key."}</p>
-                  ) : null}
-                </div>
-                <div className="field-row settings-pref-actions">
-                  {!keyConnected ? (
-                    <button type="button" className="ghost-pill" disabled={busy || !keyInput.trim()} onClick={() => void saveKey()}>
-                      Save key
-                    </button>
-                  ) : (
-                    <button type="button" className="ghost-pill" disabled={busy} onClick={() => setReplacing(true)}>
-                      Change
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="ghost-pill"
-                    disabled={busy || !keyStatus?.stored}
-                    onClick={() =>
-                      void tmdbClearKey().then((status) => {
-                        setKeyStatus(status);
-                        setReplacing(false);
-                        onStatus("TMDB key removed");
-                      })
-                    }
-                  >
-                    Remove
+            <div className="settings-subgroup">
+              <header className="settings-subgroup-head">
+                <h3>
+                  <label htmlFor="settings-tmdb">TMDB</label>
+                </h3>
+                {keyConnected ? <p className="key-status">Configured</p> : null}
+              </header>
+              {keyConnected ? null : (
+                <input
+                  id="settings-tmdb"
+                  value={keyInput}
+                  onChange={(e) => setKeyInput(e.target.value)}
+                  placeholder={keyStatus?.stored ? "Paste a replacement key" : "v3 key from themoviedb.org"}
+                  spellCheck={false}
+                  disabled={busy}
+                />
+              )}
+              {keyStatus?.stored && keyStatus.valid === false ? (
+                <p className="key-status is-bad">{keyStatus.lastError ?? "TMDB rejected this key."}</p>
+              ) : null}
+              <div className="settings-actions">
+                {!keyConnected ? (
+                  <button type="button" className="ghost-pill" disabled={busy || !keyInput.trim()} onClick={() => void saveKey()}>
+                    Save key
                   </button>
-                </div>
-                {lastEnrich ? <p className="hint">{formatEnrich(lastEnrich)}</p> : null}
+                ) : (
+                  <button type="button" className="text-btn" disabled={busy} onClick={() => setReplacing(true)}>
+                    Change
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="text-btn"
+                  disabled={busy || !keyStatus?.stored}
+                  onClick={() =>
+                    void tmdbClearKey().then((status) => {
+                      setKeyStatus(status);
+                      setReplacing(false);
+                      onStatus("TMDB key removed");
+                    })
+                  }
+                >
+                  Remove
+                </button>
+              </div>
+              {lastEnrich ? <p className="hint">{formatEnrich(lastEnrich)}</p> : null}
+            </div>
+          </section>
+
+          <section className="settings-quadrant">
+            <h2>Appearance</h2>
+            <p className="hint">Choose the theme and accent Osvell uses on this PC.</p>
+            <div className="settings-subgroup">
+              <h3>Theme</h3>
+              <div className="theme-preview-row" role="radiogroup" aria-label="Theme">
+                {(["system", "dark", "light"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    role="radio"
+                    aria-checked={theme === t}
+                    className={`theme-preview is-${t}${theme === t ? " is-on" : ""}`}
+                    onClick={() => onTheme(t)}
+                  >
+                    <span className="theme-preview-surface" aria-hidden="true" />
+                    <span>{t[0].toUpperCase() + t.slice(1)}</span>
+                  </button>
+                ))}
               </div>
             </div>
-          </div>
-        </section>
-        ) : null}
-
-        {section === "appearance" ? (
-        <section className="settings-group">
-            <header className="settings-panel-intro">
-              <h2>Appearance</h2>
-              <p className="hint">Choose the theme and accent Osvell uses on this PC.</p>
-            </header>
-            <div className="settings-pref-list settings-appearance-options">
-              <div className="settings-pref-row">
-                <div className="settings-pref-label">
-                  <span className="field-label">Theme</span>
-                </div>
-                <div className="settings-pref-control">
-                  <div className="theme-preview-row" role="radiogroup" aria-label="Theme">
-                    {(["system", "dark", "light"] as const).map((t) => (
-                      <button
-                        key={t}
-                        type="button"
-                        role="radio"
-                        aria-checked={theme === t}
-                        className={`theme-preview is-${t}${theme === t ? " is-on" : ""}`}
-                        onClick={() => onTheme(t)}
-                      >
-                        <span className="theme-preview-surface" aria-hidden="true" />
-                        <span>{t[0].toUpperCase() + t.slice(1)}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              <div className="settings-pref-row">
-                <div className="settings-pref-label">
-                  <span className="field-label">Accent</span>
-                </div>
-                <div className="settings-pref-control">
-                  <div className="accent-radio-row" role="radiogroup" aria-label="Accent">
-                    {(["app", "system"] as const).map((a) => (
-                      <button
-                        key={a}
-                        type="button"
-                        role="radio"
-                        aria-checked={accent === a}
-                        className={`accent-radio${accent === a ? " is-on" : ""}`}
-                        onClick={() => onAccent(a)}
-                      >
-                        <span className={`accent-radio-dot is-${a}`} aria-hidden="true" />
-                        <span>{a === "app" ? "Osvell blue" : "System"}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
+            <div className="settings-subgroup">
+              <h3>Accent</h3>
+              <div className="accent-radio-row" role="radiogroup" aria-label="Accent">
+                {(["app", "system"] as const).map((a) => (
+                  <button
+                    key={a}
+                    type="button"
+                    role="radio"
+                    aria-checked={accent === a}
+                    className={`accent-radio${accent === a ? " is-on" : ""}`}
+                    onClick={() => onAccent(a)}
+                  >
+                    <span className={`accent-radio-dot is-${a}`} aria-hidden="true" />
+                    <span>{a === "app" ? "Osvell blue" : "System"}</span>
+                  </button>
+                ))}
               </div>
             </div>
-        </section>
-        ) : null}
+          </section>
 
-        {section === "taste" ? (
-        <section className="settings-group">
-          <header className="settings-panel-intro">
+          <section className="settings-quadrant">
             <h2>Taste</h2>
             <p className="hint">Choose how Taste reads your film history and whether it can check the web.</p>
-          </header>
-          <div className="settings-pref-list">
-            <div className="settings-pref-row settings-taste-model-row">
-              <div className="settings-pref-label">
-                <span className="field-label">Recommendation model</span>
-              </div>
-              <div className="settings-pref-control settings-taste-model-summary">
-                <div className="settings-pref-main">
-                  <strong>{tasteModelLabel}</strong>
-                  <p className="hint">{tasteModelBlurb}</p>
-                </div>
+            <div className="settings-subgroup">
+              <header className="settings-subgroup-head">
+                <h3>Recommendation model</h3>
                 <button
                   ref={tasteModelChangeRef}
                   type="button"
@@ -673,107 +589,84 @@ export function SettingsView({
                 >
                   Change <span aria-hidden="true">›</span>
                 </button>
-              </div>
+              </header>
+              <strong className="settings-model-name">{tasteModelLabel}</strong>
+              <p className="hint">{tasteModelBlurb}</p>
             </div>
-            <div className="settings-pref-row">
-              <div className="settings-pref-label">
-                <span className="field-label">Web search</span>
-              </div>
-              <div className="settings-pref-control">
-                <div className="seg">
-                  <button
-                    type="button"
-                    className={tasteStatus?.web ? "is-on" : ""}
-                    onClick={() => void pickTasteWeb(true)}
-                  >
-                    On
-                  </button>
-                  <button
-                    type="button"
-                    className={!tasteStatus?.web ? "is-on" : ""}
-                    onClick={() => void pickTasteWeb(false)}
-                  >
-                    Off
-                  </button>
-                </div>
-                <p className="hint">A few critic-list lookups per run. Caps cost. No multi-model swarm.</p>
-              </div>
+            <div className="settings-subgroup">
+              <PrefSwitch
+                id="taste-web"
+                label="Web search"
+                hint="A few critic-list lookups per run. Caps cost. No multi-model swarm."
+                checked={Boolean(tasteStatus?.web)}
+                disabled={busy || !tasteStatus}
+                onChange={(enabled) => void pickTasteWeb(enabled)}
+              />
             </div>
-            <div className="settings-pref-row settings-key-row">
-              <div className="settings-pref-label">
-                <label htmlFor="settings-openrouter">OpenRouter</label>
-              </div>
-              <div className="settings-pref-control">
-                <div className="settings-pref-main">
-                  {tasteConnected ? (
-                    <p className="key-status">Configured</p>
-                  ) : (
-                    <input
-                      id="settings-openrouter"
-                      value={tasteKeyInput}
-                      onChange={(e) => setTasteKeyInput(e.target.value)}
-                      placeholder={tasteStatus?.stored ? "Paste a replacement key" : "sk-or-... from openrouter.ai/keys"}
-                      spellCheck={false}
-                      disabled={busy}
-                    />
-                  )}
-                  {tasteStatus?.stored && tasteStatus.valid === false ? (
-                    <p className="key-status is-bad">{tasteStatus.lastError ?? "OpenRouter rejected this key."}</p>
-                  ) : null}
-                </div>
-                <div className="field-row settings-pref-actions">
-                  {!tasteConnected ? (
-                    <button
-                      type="button"
-                      className="ghost-pill"
-                      disabled={busy || !tasteKeyInput.trim()}
-                      onClick={() => void saveTasteKey()}
-                    >
-                      Save key
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="ghost-pill"
-                      aria-label="Change OpenRouter key"
-                      disabled={busy}
-                      onClick={() => setTasteReplacing(true)}
-                    >
-                      Change
-                    </button>
-                  )}
+            <div className="settings-subgroup">
+              <header className="settings-subgroup-head">
+                <h3>
+                  <label htmlFor="settings-openrouter">OpenRouter</label>
+                </h3>
+                {tasteConnected ? <p className="key-status">Configured</p> : null}
+              </header>
+              {tasteConnected ? null : (
+                <input
+                  id="settings-openrouter"
+                  value={tasteKeyInput}
+                  onChange={(e) => setTasteKeyInput(e.target.value)}
+                  placeholder={tasteStatus?.stored ? "Paste a replacement key" : "sk-or-... from openrouter.ai/keys"}
+                  spellCheck={false}
+                  disabled={busy}
+                />
+              )}
+              {tasteStatus?.stored && tasteStatus.valid === false ? (
+                <p className="key-status is-bad">{tasteStatus.lastError ?? "OpenRouter rejected this key."}</p>
+              ) : null}
+              <div className="settings-actions">
+                {!tasteConnected ? (
                   <button
                     type="button"
                     className="ghost-pill"
-                    disabled={busy || !tasteStatus?.stored}
-                    onClick={() =>
-                      void tasteClearKey().then((status) => {
-                        setTasteStatus(status);
-                        setTasteReplacing(false);
-                        onStatus("OpenRouter key removed");
-                      })
-                    }
+                    disabled={busy || !tasteKeyInput.trim()}
+                    onClick={() => void saveTasteKey()}
                   >
-                    Remove
+                    Save key
                   </button>
-                </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="text-btn"
+                    aria-label="Change OpenRouter key"
+                    disabled={busy}
+                    onClick={() => setTasteReplacing(true)}
+                  >
+                    Change
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="text-btn"
+                  aria-label="Remove OpenRouter key"
+                  disabled={busy || !tasteStatus?.stored}
+                  onClick={() =>
+                    void tasteClearKey().then((status) => {
+                      setTasteStatus(status);
+                      setTasteReplacing(false);
+                      onStatus("OpenRouter key removed");
+                    })
+                  }
+                >
+                  Remove
+                </button>
               </div>
             </div>
-          </div>
-        </section>
-        ) : null}
+          </section>
 
-        {section === "system" ? (
-        <div className="settings-system-panel">
-          <header className="settings-panel-intro">
+          <section className="settings-quadrant">
             <h2>System</h2>
-          </header>
-          <div className="settings-pref-list">
-          <section className="settings-pref-row settings-startup">
-            <div className="settings-pref-label">
+            <div className="settings-subgroup">
               <h3>Startup</h3>
-            </div>
-            <div className="settings-pref-control">
               <div className="settings-switch-list">
                 <PrefSwitch
                   id="open-with-windows"
@@ -805,79 +698,70 @@ export function SettingsView({
                 Osvell always opens on Home. While it is running, including in the tray, it checks Letterboxd about once an hour for new diary and friend activity and backs off if Letterboxd asks it to wait.
               </p>
             </div>
+            <section className="settings-subgroup settings-system-device">
+              <h3>This PC</h3>
+              <p className="hint">Storage, logs, and recovery controls for this installation.</p>
+              {installInfo ? (
+                <>
+                  <p className="hint">
+                    {installKindLabel(installInfo.installKind)} · {formatBytes(installInfo.dataBytes)} on disk
+                  </p>
+                  {coverage ? <p className="hint">{formatLibrarySummary(coverage)}</p> : null}
+                  {coverage?.warnings[0] ? <p className="hint">{coverage.warnings[0]}</p> : null}
+                  <p className="mono-path">{installInfo.appDataDir}</p>
+                </>
+              ) : (
+                <p className="hint">Storage details are unavailable for this build.</p>
+              )}
+              <div className="settings-actions">
+                <button type="button" className="text-btn" onClick={() => void openDataFolder().catch(() => onStatus("Could not open data folder"))}>
+                  Open folder <span aria-hidden="true">›</span>
+                </button>
+                <button type="button" className="text-btn" onClick={() => void openLogFile().catch(() => onStatus("Could not open studio.log"))}>
+                  Log
+                </button>
+                {installInfo?.uninstallerPath ? (
+                  <button type="button" className="text-btn" onClick={() => void runUninstaller()}>
+                    Uninstall
+                  </button>
+                ) : null}
+                <button type="button" className="text-btn" onClick={() => void confirmResetData()}>
+                  Reset data
+                </button>
+              </div>
+            </section>
+            <section className={`settings-subgroup settings-system-updates${pendingVersion ? " is-update-available" : ""}`}>
+              <header className="settings-subgroup-head">
+                <h3>Updates</h3>
+                {pendingVersion ? <span className="settings-update-badge">Update available</span> : null}
+              </header>
+              <p className="hint">Keep Osvell current with the latest fixes and improvements.</p>
+              <p className="settings-system-version">Version {version}</p>
+              <div className="update-line">
+                <button type="button" className="ghost-pill" onClick={() => void checkUpdates()}>
+                  Check for updates
+                </button>
+                {pendingVersion ? (
+                  <button type="button" className="primary" onClick={() => void installUpdate()}>
+                    Update to {pendingVersion}
+                  </button>
+                ) : null}
+                <p className="update-note" aria-live="polite">{updateNote}</p>
+              </div>
+              {import.meta.env.DEV ? (
+                <p className="hint">
+                  Dev builds cannot install updates. Use the installer from{" "}
+                  <a href="https://github.com/rjreny/osvell/releases" target="_blank" rel="noreferrer">
+                    GitHub Releases
+                  </a>
+                  .
+                </p>
+              ) : null}
+              {!signingConfigured && !import.meta.env.DEV ? (
+                <p className="hint">Signing is not configured in this build. Reinstall from a signed GitHub release.</p>
+              ) : null}
+            </section>
           </section>
-          <section className="settings-pref-row settings-system-device">
-          <div className="settings-pref-label">
-            <h3>This PC</h3>
-          </div>
-          <div className="settings-pref-control">
-          <p className="hint">Storage, logs, and recovery controls for this installation.</p>
-          {installInfo ? (
-            <>
-              <p className="hint">
-                {installKindLabel(installInfo.installKind)} · {formatBytes(installInfo.dataBytes)} on disk
-              </p>
-              {coverage ? <p className="hint">{formatLibrarySummary(coverage)}</p> : null}
-              {coverage?.warnings[0] ? <p className="hint">{coverage.warnings[0]}</p> : null}
-              <p className="mono-path">{installInfo.appDataDir}</p>
-            </>
-          ) : (
-            <p className="hint">Storage details are unavailable for this build.</p>
-          )}
-          <div className="field-row settings-pref-actions">
-            <button type="button" className="ghost-pill" onClick={() => void openDataFolder().catch(() => onStatus("Could not open data folder"))}>
-              Open folder <span aria-hidden="true">›</span>
-            </button>
-            <button type="button" className="ghost-pill" onClick={() => void openLogFile().catch(() => onStatus("Could not open studio.log"))}>
-              Log
-            </button>
-            {installInfo?.uninstallerPath ? (
-              <button type="button" className="ghost-pill" onClick={() => void runUninstaller()}>
-                Uninstall
-              </button>
-            ) : null}
-            <button type="button" className="ghost-pill" onClick={() => void confirmResetData()}>
-              Reset data
-            </button>
-          </div>
-          </div>
-        </section>
-
-        <section className={`settings-pref-row settings-system-updates${pendingVersion ? " is-update-available" : ""}`}>
-          <div className="settings-pref-label">
-            <h3>Updates</h3>
-          </div>
-          <div className="settings-pref-control">
-          <p className="hint">Keep Osvell current with the latest fixes and improvements.</p>
-          <p className="settings-system-version">Version {version}</p>
-          <div className="update-line">
-            <button type="button" className="ghost-pill" onClick={() => void checkUpdates()}>
-              Check for updates
-            </button>
-            {pendingVersion ? (
-              <button type="button" className="primary" onClick={() => void installUpdate()}>
-                Update to {pendingVersion}
-              </button>
-            ) : null}
-            <p className="update-note" aria-live="polite">{updateNote}</p>
-          </div>
-          {import.meta.env.DEV ? (
-            <p className="hint">
-              Dev builds cannot install updates. Use the installer from{" "}
-              <a href="https://github.com/rjreny/osvell/releases" target="_blank" rel="noreferrer">
-                GitHub Releases
-              </a>
-              .
-            </p>
-          ) : null}
-          {!signingConfigured && !import.meta.env.DEV ? (
-            <p className="hint">Signing is not configured in this build. Reinstall from a signed GitHub release.</p>
-          ) : null}
-          </div>
-        </section>
-          </div>
-        </div>
-        ) : null}
         </div>
       </div>
       <UpdateOverlay
